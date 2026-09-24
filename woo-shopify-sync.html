@@ -1,0 +1,2520 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WooCommerce → Shopify Sync</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg: #0a0a0f;
+    --panel: #111118;
+    --border: #1e1e2e;
+    --accent: #7c3aed;
+    --accent2: #06b6d4;
+    --success: #10b981;
+    --warn: #f59e0b;
+    --error: #ef4444;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    font-size: 14px;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--panel);
+  }
+
+  .logo {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+
+  .logo span { color: var(--accent2); }
+
+  .status-pill {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 2px;
+    border: 1px solid;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .status-pill.idle { border-color: var(--muted); color: var(--muted); }
+  .status-pill.running { border-color: var(--accent2); color: var(--accent2); }
+  .status-pill.success { border-color: var(--success); color: var(--success); }
+  .status-pill.error { border-color: var(--error); color: var(--error); }
+
+  .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .dot.pulse { animation: pulse 1.2s infinite; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
+  }
+
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 32px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .full { grid-column: 1 / -1; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 24px;
+  }
+
+  .panel-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .panel-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  label {
+    display: block;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    margin-bottom: 6px;
+    margin-top: 14px;
+  }
+
+  label:first-of-type { margin-top: 0; }
+
+  input, select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    padding: 10px 12px;
+    border-radius: 3px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+
+  input:focus, select:focus { border-color: var(--accent); }
+  input[type="password"] { letter-spacing: 0.15em; }
+
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  .btn {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 12px 20px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover { background: #6d28d9; }
+  .btn-primary:disabled { background: #2d2d3a; color: var(--muted); cursor: not-allowed; }
+
+  .btn-secondary {
+    background: transparent;
+    color: var(--accent2);
+    border: 1px solid var(--accent2);
+  }
+  .btn-secondary:hover { background: rgba(6,182,212,0.08); }
+
+  .btn-danger {
+    background: transparent;
+    color: var(--error);
+    border: 1px solid var(--error);
+  }
+
+  .actions {
+    margin-top: 20px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  /* Stats */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .stat {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 14px 16px;
+  }
+
+  .stat-val {
+    font-family: var(--mono);
+    font-size: 24px;
+    font-weight: 600;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+
+  .stat-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  /* Log */
+  .log-container {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 16px;
+    height: 300px;
+    overflow-y: auto;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.7;
+  }
+
+  .log-line { display: flex; gap: 10px; }
+  .log-time { color: var(--muted); flex-shrink: 0; }
+  .log-info { color: var(--accent2); }
+  .log-ok { color: var(--success); }
+  .log-warn { color: var(--warn); }
+  .log-err { color: var(--error); }
+
+  /* Progress */
+  .progress-wrap {
+    margin-top: 16px;
+  }
+
+  .progress-header {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .progress-bar {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 2px;
+    transition: width 0.3s;
+    width: 0%;
+  }
+
+  /* Schedule */
+  .schedule-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 14px;
+  }
+
+  .toggle {
+    position: relative;
+    width: 40px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+
+  .toggle input { opacity: 0; width: 0; height: 0; }
+
+  .toggle-slider {
+    position: absolute;
+    inset: 0;
+    background: var(--border);
+    border-radius: 11px;
+    cursor: pointer;
+    transition: 0.2s;
+  }
+
+  .toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 16px; height: 16px;
+    left: 3px; top: 3px;
+    background: var(--muted);
+    border-radius: 50%;
+    transition: 0.2s;
+  }
+
+  .toggle input:checked + .toggle-slider { background: var(--accent); }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(18px); background: #fff; }
+
+  .toggle-label {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+  }
+
+  /* Next sync */
+  .next-sync {
+    margin-top: 16px;
+    padding: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .next-sync span { color: var(--accent2); }
+
+  /* Checkbox grid */
+  .check-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .check-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .check-item input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent);
+    flex-shrink: 0;
+  }
+
+  select option { background: var(--panel); }
+
+  .badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 2px;
+    background: rgba(124,58,237,0.2);
+    color: var(--accent);
+    border: 1px solid rgba(124,58,237,0.3);
+  }
+
+  /* Comparación de inventario */
+  .cmp-filters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .cmp-filter {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 12px 14px;
+    cursor: pointer; text-align: left; color: var(--text); transition: border-color 0.15s, background 0.15s;
+  }
+  .cmp-filter:hover { border-color: var(--muted); }
+  .cmp-filter.active { background: rgba(124,58,237,0.08); border-color: var(--accent); }
+  .cmp-filter .stat-val { font-size: 20px; }
+  .cmp-search { margin-bottom: 14px; }
+  .cmp-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 3px; max-height: 480px; overflow-y: auto; }
+  .cmp-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  .cmp-table th {
+    position: sticky; top: 0; background: var(--panel); color: var(--muted); font-size: 10px; letter-spacing: 0.1em;
+    text-transform: uppercase; text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-weight: 600;
+  }
+  .cmp-table td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
+  .cmp-table tr:last-child td { border-bottom: none; }
+  .cmp-name { font-family: var(--sans); font-size: 13px; white-space: normal; min-width: 180px; }
+  .cmp-sku { color: var(--muted); font-size: 11px; }
+  .cmp-missing { color: var(--muted); }
+  .cmp-hl { color: var(--warn); font-weight: 600; }
+  .cmp-badge { font-size: 10px; padding: 3px 8px; border-radius: 2px; border: 1px solid; letter-spacing: 0.06em; text-transform: uppercase; }
+  .cmp-badge.synced { color: var(--success); border-color: var(--success); }
+  .cmp-badge.diff { color: var(--warn); border-color: var(--warn); }
+  .cmp-badge.woo_only { color: var(--accent); border-color: var(--accent); }
+  .cmp-badge.shopify_only { color: var(--muted); border-color: var(--muted); }
+  .cmp-empty { padding: 24px; text-align: center; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  @media (max-width: 800px) { .cmp-filters { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Woo<span>→</span>Shopify</div>
+  <div class="badge">SYNC ENGINE v1.0</div>
+  <div class="status-pill idle" id="globalStatus">
+    <div class="dot"></div>
+    <span>INACTIVO</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- WooCommerce Config -->
+  <div class="panel">
+    <div class="panel-title">WooCommerce — Origen</div>
+
+    <label>URL de la tienda</label>
+    <input type="text" id="wooUrl" placeholder="https://mitienda.com" />
+
+    <label>Consumer Key</label>
+    <input type="text" id="wooKey" placeholder="ck_xxxxxxxxxxxxxxxx" />
+
+    <label>Consumer Secret</label>
+    <input type="password" id="wooSecret" placeholder="cs_xxxxxxxxxxxxxxxx" />
+
+    <div class="actions">
+      <button class="btn btn-secondary" onclick="testWoo()">▷ Probar conexión</button>
+    </div>
+  </div>
+
+  <!-- Shopify Config -->
+  <div class="panel">
+    <div class="panel-title">Shopify — Destino</div>
+
+    <label>URL de la tienda</label>
+    <input type="text" id="shopifyUrl" placeholder="mitienda.myshopify.com" value="miminileodev.myshopify.com" />
+
+    <label>Client ID</label>
+    <input type="text" id="shopifyClientId" placeholder="client_id de tu app" value="e298e9e8dbf7dfb3938e6b076a6b2f1e" />
+
+    <label>Access Token</label>
+    <input type="password" id="shopifyToken" placeholder="Se obtiene al autenticar ↓" readonly />
+
+    <label>API Version</label>
+    <select id="shopifyVersion">
+      <option value="2025-01">2025-01</option>
+      <option value="2024-10">2024-10</option>
+      <option value="2024-07">2024-07</option>
+    </select>
+
+    <div class="actions">
+      <button class="btn btn-primary" onclick="authShopify()">🔑 Autenticar con Shopify</button>
+      <button class="btn btn-secondary" onclick="testShopify()">▷ Probar conexión</button>
+    </div>
+  </div>
+
+  <!-- Opciones de migración -->
+  <div class="panel">
+    <div class="panel-title">Qué migrar</div>
+
+    <label style="font-weight:600;color:var(--accent2);margin-bottom:8px;">Productos</label>
+    <div class="check-grid">
+      <label class="check-item"><input type="checkbox" id="chk_name" checked> Nombre y descripción</label>
+      <label class="check-item"><input type="checkbox" id="chk_price" checked> Precios</label>
+      <label class="check-item"><input type="checkbox" id="chk_images" checked> Imágenes</label>
+      <label class="check-item"><input type="checkbox" id="chk_variants" checked> Variantes</label>
+      <label class="check-item"><input type="checkbox" id="chk_stock" checked> Stock / inventario</label>
+      <label class="check-item"><input type="checkbox" id="chk_cats" checked> Categorías / tags</label>
+      <label class="check-item"><input type="checkbox" id="chk_sku" checked> SKUs</label>
+      <label class="check-item"><input type="checkbox" id="chk_meta" checked> Metadatos SEO</label>
+    </div>
+
+    <label style="font-weight:600;color:var(--accent2);margin-top:18px;margin-bottom:8px;">Extras</label>
+    <div class="check-grid">
+      <label class="check-item" title="Crea el árbol de categorías como metaobjetos «Categoría» (cada una referencia a su padre) y asigna a cada producto sus categorías en el metacampo custom.categorias."><input type="checkbox" id="chk_cattree" checked> Categorías → Metaobjetos (árbol)</label>
+      <label class="check-item" title="Escribe en cada producto los metacampos custom.descripcion_corta, custom.destacado y custom.upsells a partir de WooCommerce."><input type="checkbox" id="chk_metafields" checked> Metacampos (descr. corta, destacado, upsells)</label>
+      <label class="check-item"><input type="checkbox" id="chk_orders"> Pedidos</label>
+      <label class="check-item" title="Al terminar la migración completa, borra en Shopify los productos que no estén publicados en WooCommerce."><input type="checkbox" id="chk_prune"> Eliminar en Shopify lo que no esté en WooCommerce</label>
+    </div>
+
+    <label style="margin-top:18px;">En caso de producto existente en Shopify</label>
+    <select id="conflictMode">
+      <option value="update">Actualizar (sobrescribir)</option>
+      <option value="skip">Omitir (no tocar)</option>
+      <option value="duplicate">Crear duplicado</option>
+    </select>
+  </div>
+
+  <!-- Sincronización periódica -->
+  <div class="panel">
+    <div class="panel-title">Sincronización automática</div>
+
+    <div class="schedule-row">
+      <label class="toggle">
+        <input type="checkbox" id="autoSync" onchange="toggleAutoSync()">
+        <span class="toggle-slider"></span>
+      </label>
+      <span class="toggle-label">Activar sincronización periódica</span>
+    </div>
+
+    <label style="margin-top:18px;">Intervalo</label>
+    <select id="syncInterval" disabled>
+      <option value="900000">Cada 15 minutos</option>
+      <option value="1800000">Cada 30 minutos</option>
+      <option value="3600000" selected>Cada hora</option>
+      <option value="21600000">Cada 6 horas</option>
+      <option value="86400000">Cada 24 horas</option>
+    </select>
+
+    <div class="next-sync" id="nextSyncInfo" style="display:none">
+      Próxima sincronización: <span id="nextSyncTime">—</span>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-danger" id="stopBtn" onclick="stopSync()" style="display:none">■ Detener</button>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="panel full">
+    <div class="panel-title">Resumen</div>
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-val" id="statTotal">—</div>
+        <div class="stat-label">Productos WooCommerce</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="statOk" style="color:var(--success)">—</div>
+        <div class="stat-label">Sincronizados OK</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="statSkip" style="color:var(--warn)">—</div>
+        <div class="stat-label">Omitidos</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="statErr" style="color:var(--error)">—</div>
+        <div class="stat-label">Errores</div>
+      </div>
+    </div>
+
+    <div class="progress-wrap">
+      <div class="progress-header">
+        <span id="progressLabel">Esperando...</span>
+        <span id="progressPct">0%</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn btn-primary" id="startBtn" onclick="startMigration('full')">▶ Iniciar migración completa</button>
+      <button class="btn btn-secondary" onclick="startMigration('stock')">↻ Solo actualizar stock/precios</button>
+      <button class="btn btn-secondary" onclick="startMigration('new')">＋ Solo productos nuevos</button>
+      <button class="btn btn-secondary" onclick="startMigration('categories')" title="Solo crea/actualiza el árbol de categorías como metaobjetos y asigna las categorías a los productos ya existentes en Shopify. No toca productos.">🌳 Solo categorías (árbol)</button>
+      <button class="btn btn-secondary" onclick="runComparison()">⇄ Comparar inventario</button>
+      <button class="btn btn-secondary" onclick="exportLog()">⬇ Exportar log</button>
+    </div>
+  </div>
+
+  <!-- Comparación de inventario -->
+  <div class="panel full" id="cmpPanel" style="display:none">
+    <div class="panel-title">Comparación de inventario</div>
+    <div class="cmp-filters" id="cmpFilters">
+      <button class="cmp-filter" data-status="synced" onclick="setCmpFilter('synced')">
+        <div class="stat-val" id="cmpCountSynced" style="color:var(--success)">—</div>
+        <div class="stat-label">Sincronizados</div>
+      </button>
+      <button class="cmp-filter" data-status="diff" onclick="setCmpFilter('diff')">
+        <div class="stat-val" id="cmpCountDiff" style="color:var(--warn)">—</div>
+        <div class="stat-label">Diferentes</div>
+      </button>
+      <button class="cmp-filter" data-status="woo_only" onclick="setCmpFilter('woo_only')">
+        <div class="stat-val" id="cmpCountWooOnly" style="color:var(--accent)">—</div>
+        <div class="stat-label">Solo WooCommerce</div>
+      </button>
+      <button class="cmp-filter" data-status="shopify_only" onclick="setCmpFilter('shopify_only')">
+        <div class="stat-val" id="cmpCountShopifyOnly" style="color:var(--muted)">—</div>
+        <div class="stat-label">Solo Shopify</div>
+      </button>
+    </div>
+    <div class="cmp-search">
+      <input type="search" id="cmpSearch" placeholder="Buscar por nombre o SKU…" oninput="renderComparison()" />
+    </div>
+    <div class="cmp-table-wrap">
+      <table class="cmp-table">
+        <thead>
+          <tr><th>Producto</th><th>WooCommerce</th><th>Shopify</th><th>Estado</th></tr>
+        </thead>
+        <tbody id="cmpBody"></tbody>
+      </table>
+      <div class="cmp-empty" id="cmpEmpty" style="display:none">Sin resultados para este filtro.</div>
+    </div>
+    <div class="actions">
+      <button class="btn btn-danger" id="cmpDeleteBtn" onclick="deleteShopifyOnly()" disabled>🗑 Eliminar los que solo están en Shopify</button>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="panel full">
+    <div class="panel-title">Log en tiempo real</div>
+    <div class="log-container" id="logContainer">
+      <div class="log-line"><span class="log-time">--:--:--</span><span class="log-muted" style="color:var(--muted)">Configura las credenciales y pulsa "Iniciar migración".</span></div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ─── Persistencia en localStorage ────────────────────────────────────────────
+function saveConfig() {
+  const fields = ['wooUrl','wooKey','wooSecret','shopifyUrl','shopifyClientId','shopifyToken','shopifyVersion','conflictMode'];
+  const data = {};
+  fields.forEach(id => { const el = document.getElementById(id); if (el) data[id] = el.value; });
+  localStorage.setItem('woo-shopify-config', JSON.stringify(data));
+}
+function loadConfig() {
+  try {
+    const data = JSON.parse(localStorage.getItem('woo-shopify-config') || '{}');
+    Object.entries(data).forEach(([id, val]) => {
+      const el = document.getElementById(id);
+      if (el && val) { el.value = val; el.removeAttribute('readonly'); }
+    });
+  } catch {}
+}
+window.addEventListener('load', loadConfig);
+// Auto-guardar al cambiar cualquier input
+document.addEventListener('input', saveConfig);
+
+// ─── Estado ─────────────────────────────────────────────────────────────────
+let syncTimer = null;
+let running = false;
+let abortController = null;
+let logLines = [];
+let stats = { total: 0, ok: 0, skip: 0, err: 0 };
+
+// ─── Logging ─────────────────────────────────────────────────────────────────
+// Marca de tiempo con día y mes: el log se acumula entre sesiones y sin fecha se mezclan los días.
+function logTimestamp(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function log(msg, type = 'info') {
+  const now = logTimestamp();
+  const el = document.createElement('div');
+  el.className = 'log-line';
+  const time = document.createElement('span');
+  time.className = 'log-time';
+  time.textContent = now;
+  const text = document.createElement('span');
+  text.className = `log-${type}`;
+  text.textContent = msg;
+  el.append(time, text);
+  const container = document.getElementById('logContainer');
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+  logLines.push(`[${now}] ${msg}`);
+}
+
+// ─── UI helpers ───────────────────────────────────────────────────────────────
+function setStatus(state, text) {
+  const el = document.getElementById('globalStatus');
+  el.className = `status-pill ${state}`;
+  el.innerHTML = `<div class="dot${state === 'running' ? ' pulse' : ''}"></div><span>${text}</span>`;
+}
+
+function updateProgress(done, total, label) {
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('progressPct').textContent = pct + '%';
+  document.getElementById('progressLabel').textContent = label || `${done} / ${total}`;
+}
+
+function updateStats() {
+  document.getElementById('statTotal').textContent = stats.total || '—';
+  document.getElementById('statOk').textContent = stats.ok || '—';
+  document.getElementById('statSkip').textContent = stats.skip || '—';
+  document.getElementById('statErr').textContent = stats.err || '—';
+}
+
+function resetStats() {
+  stats = { total: 0, ok: 0, skip: 0, err: 0 };
+  updateStats();
+  updateProgress(0, 0, 'Iniciando...');
+}
+
+// ─── Configuración ───────────────────────────────────────────────────────────
+function getConfig() {
+  return {
+    wooUrl: document.getElementById('wooUrl').value.replace(/\/$/, ''),
+    wooKey: document.getElementById('wooKey').value,
+    wooSecret: document.getElementById('wooSecret').value,
+    shopifyUrl: document.getElementById('shopifyUrl').value.replace(/\/$/, ''),
+    shopifyToken: document.getElementById('shopifyToken').value,
+    shopifyVersion: document.getElementById('shopifyVersion').value,
+    conflictMode: document.getElementById('conflictMode').value,
+    fields: {
+      name: document.getElementById('chk_name').checked,
+      price: document.getElementById('chk_price').checked,
+      images: document.getElementById('chk_images').checked,
+      variants: document.getElementById('chk_variants').checked,
+      stock: document.getElementById('chk_stock').checked,
+      categories: document.getElementById('chk_cats').checked,
+      sku: document.getElementById('chk_sku').checked,
+      meta: document.getElementById('chk_meta').checked,
+    },
+    syncCategoryTree: document.getElementById('chk_cattree').checked,
+    syncMetafields: document.getElementById('chk_metafields').checked,
+    syncOrders: document.getElementById('chk_orders').checked,
+    pruneOrphans: document.getElementById('chk_prune').checked,
+  };
+}
+
+function validate(cfg) {
+  if (!cfg.wooUrl || !cfg.wooKey || !cfg.wooSecret) { alert('Faltan credenciales de WooCommerce.'); return false; }
+  if (!cfg.shopifyUrl || !cfg.shopifyToken) { alert('Faltan credenciales de Shopify.'); return false; }
+  return true;
+}
+
+// ─── Proxy helper ─────────────────────────────────────────────────────────────
+const PROXY = '/proxy';
+
+const PROXY_DOWN_MSG = 'No se pudo conectar con el servidor local (proxy). Comprueba que "npm start" sigue en marcha en http://localhost:4000';
+const MAX_CONSECUTIVE_NETWORK_ERRORS = 3;
+
+async function proxiedFetch(targetUrl, opts = {}, signal) {
+  const proxyUrl = `${PROXY}?url=${encodeURIComponent(targetUrl)}`;
+  try {
+    return await fetch(proxyUrl, { ...opts, signal });
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    // fetch solo rechaza por red (servidor caído, sin conexión); nunca por HTTP 4xx/5xx.
+    const err = new Error(PROXY_DOWN_MSG);
+    err.isNetwork = true;
+    throw err;
+  }
+}
+
+// ─── WooCommerce API ──────────────────────────────────────────────────────────
+async function wooRequest(cfg, endpoint, params = {}, signal) {
+  const url = new URL(`${cfg.wooUrl}/wp-json/wc/v3/${endpoint}`);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  // Credenciales como parámetros de URL (método oficial de WooCommerce sobre HTTPS).
+  // Muchos hostings con PHP en CGI/FastCGI descartan la cabecera Authorization.
+  url.searchParams.set('consumer_key', cfg.wooKey);
+  url.searchParams.set('consumer_secret', cfg.wooSecret);
+  const res = await proxiedFetch(url.toString(), {
+    headers: { 'Content-Type': 'application/json' }
+  }, signal);
+  if (!res.ok) throw new Error(`WooCommerce ${res.status}: ${await res.text()}`);
+  return { data: await res.json(), headers: res.headers };
+}
+
+async function getAllWooProducts(cfg, signal, status = 'publish') {
+  let page = 1, all = [];
+  while (true) {
+    const { data, headers } = await wooRequest(cfg, 'products', { per_page: 100, page, status }, signal);
+    all = all.concat(data);
+    log(`WooCommerce: página ${page} — ${data.length} productos`, 'info');
+    const total = parseInt(headers.get('X-WP-TotalPages') || '1');
+    if (page >= total || data.length === 0) break;
+    page++;
+  }
+  return all;
+}
+
+// ─── Shopify API ──────────────────────────────────────────────────────────────
+async function shopifyRequest(cfg, method, endpoint, body = null, signal) {
+  const url = `https://${cfg.shopifyUrl}/admin/api/${cfg.shopifyVersion}/${endpoint}`;
+  const opts = {
+    method,
+    headers: {
+      'X-Shopify-Access-Token': cfg.shopifyToken,
+      'Content-Type': 'application/json'
+    }
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await proxiedFetch(url, opts, signal);
+  // Retry en caso de rate limit (429)
+  if (res.status === 429) {
+    const wait = parseInt(res.headers.get('Retry-After') || '2') * 1000;
+    log(`Rate limit Shopify, esperando ${wait/1000}s...`, 'warn');
+    await new Promise(r => setTimeout(r, wait));
+    return shopifyRequest(cfg, method, endpoint, body, signal);
+  }
+  if (!res.ok) throw new Error(`Shopify ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+// ─── Stock por InventoryLevel ────────────────────────────────────────────────
+// `inventory_quantity` es de solo lectura en la API REST de Shopify: enviarlo en un
+// PUT de variante no da error pero se ignora. El stock se fija en la ubicación
+// principal con POST inventory_levels/set.json.
+let shopifyLocationId = null;
+
+// `locations.json` exige el permiso read_locations, que la app no pide. En su lugar se
+// deduce la ubicación de los niveles de inventario del propio artículo (solo read_inventory).
+async function getPrimaryLocationId(cfg, variant, signal) {
+  if (shopifyLocationId) return shopifyLocationId;
+  const data = await shopifyRequest(cfg, 'GET', `inventory_levels.json?inventory_item_ids=${variant.inventory_item_id}&limit=1`, null, signal);
+  const level = (data.inventory_levels || [])[0];
+  if (!level) throw new Error('El artículo no está asignado a ninguna ubicación de inventario en Shopify');
+  shopifyLocationId = level.location_id;
+  return shopifyLocationId;
+}
+
+// Devuelve true si fijó el stock; false si WooCommerce no gestiona stock para ese producto.
+async function setVariantStock(cfg, variant, quantity, signal) {
+  if (quantity === null || quantity === undefined || !variant?.inventory_item_id) return false;
+  const location_id = await getPrimaryLocationId(cfg, variant, signal);
+  const body = { location_id, inventory_item_id: variant.inventory_item_id, available: Number(quantity) || 0 };
+  try {
+    await shopifyRequest(cfg, 'POST', 'inventory_levels/set.json', body, signal);
+  } catch (e) {
+    if (!/inventory tracking/i.test(e.message)) throw e;
+    // El artículo se creó en Shopify sin seguimiento de cantidad: activarlo y reintentar una vez.
+    await shopifyRequest(cfg, 'PUT', `inventory_items/${variant.inventory_item_id}.json`, { inventory_item: { tracked: true } }, signal);
+    await shopifyRequest(cfg, 'POST', 'inventory_levels/set.json', body, signal);
+    log('  Seguimiento de inventario activado en Shopify para este artículo', 'info');
+  }
+  return true;
+}
+
+// ─── Conversión WooCommerce → Shopify ────────────────────────────────────────
+// Descarga todo el catálogo de Shopify siguiendo la paginación por cabecera Link.
+// Mapa id Shopify → id Woo leído del metacampo custom.woo_id (lo escribe esta herramienta).
+async function fetchShopifyWooIds(cfg, signal) {
+  const map = new Map();
+  let cursor = null;
+  do {
+    const data = await shopifyGraphQL(cfg, `
+      query($cursor: String, $ns: String!, $key: String!) {
+        products(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id metafield(namespace: $ns, key: $key) { value } }
+        }
+      }
+    `, { cursor, ns: CATEGORY_METAFIELD_NS, key: WOO_ID_METAFIELD_KEY }, signal);
+    data.products.nodes.forEach(n => {
+      const wooId = toNumberOrNull(n.metafield?.value);
+      if (wooId !== null) map.set(Number(String(n.id).split('/').pop()), wooId);
+    });
+    cursor = data.products.pageInfo.hasNextPage ? data.products.pageInfo.endCursor : null;
+  } while (cursor && !signal?.aborted);
+  return map;
+}
+
+// Catálogo REST de Shopify con el woo_id de cada producto adjunto (p.wooId), que es la clave
+// principal de emparejamiento. Si no se pueden leer los metacampos se sigue solo con SKU y título.
+async function getAllShopifyProducts(cfg, signal, fields = 'id,title,variants') {
+  const products = await getAllShopifyProductsRest(cfg, signal, fields);
+  try {
+    const wooIds = await fetchShopifyWooIds(cfg, signal);
+    return products.map(p => ({ ...p, wooId: wooIds.get(p.id) ?? null }));
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    log(`Aviso: no se pudo leer el metacampo woo_id de Shopify (${e.message}); se empareja solo por SKU y título`, 'warn');
+    return products;
+  }
+}
+
+async function getAllShopifyProductsRest(cfg, signal, fields) {
+  const all = [];
+  let nextUrl = `https://${cfg.shopifyUrl}/admin/api/${cfg.shopifyVersion}/products.json?limit=250&fields=${fields}`;
+  while (nextUrl) {
+    const res = await proxiedFetch(nextUrl, { headers: { 'X-Shopify-Access-Token': cfg.shopifyToken, 'Content-Type': 'application/json' } }, signal);
+    if (res.status === 429) {
+      const wait = parseInt(res.headers.get('Retry-After') || '2') * 1000;
+      log(`Rate limit Shopify, esperando ${wait / 1000}s...`, 'warn');
+      await new Promise(r => setTimeout(r, wait));
+      continue; // reintenta la misma página
+    }
+    if (!res.ok) throw new Error(`Shopify ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    all.push(...(data.products || []));
+    const linkHeader = res.headers.get('Link');
+    nextUrl = linkHeader?.match(/<([^>]+)>; rel="next"/)?.[1] || null;
+  }
+  return all;
+}
+
+// Resolutor id Woo → producto Shopify con el MISMO emparejamiento uno a uno que la comparación
+// y el borrado de huérfanos (woo_id, luego SKU, luego título).
+function shopifyResolver(wooProducts, shopifyProducts) {
+  const { pairs } = pairCatalogs(wooProducts, shopifyProducts);
+  return {
+    pairs,
+    productOf: (woo) => pairs.get(woo.id) || null,
+    idOf: (woo) => pairs.get(woo.id)?.id || null,
+  };
+}
+
+// Escribe custom.woo_id en los productos indicados (lotes de metafieldsSet). links: [{ shopifyId, wooId }].
+async function writeWooIdLinks(cfg, links, signal) {
+  if (!links.length) return 0;
+  try {
+    await ensureProductMetafieldDefinitions(cfg, signal, [WOO_ID_METAFIELD_DEF]);
+  } catch (e) {
+    log(`✗ No se pudo preparar la definición del metacampo woo_id: ${e.message}`, 'err');
+    return 0;
+  }
+  const metafields = links.map(l => ({ ownerId: `gid://shopify/Product/${l.shopifyId}`, namespace: CATEGORY_METAFIELD_NS, key: WOO_ID_METAFIELD_KEY, type: 'number_integer', value: String(l.wooId) }));
+  let written = 0;
+  for (const batch of chunk(metafields, METAFIELDS_SET_BATCH)) {
+    if (signal?.aborted) break;
+    try {
+      const data = await shopifyGraphQL(cfg, `
+        mutation($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) { metafields { id } userErrors { field message } }
+        }
+      `, { metafields: batch }, signal);
+      throwUserErrors('metafieldsSet woo_id', data.metafieldsSet.userErrors);
+      written += batch.length;
+    } catch (e) {
+      log(`✗ Error escribiendo woo_id (lote de ${batch.length}): ${e.message}`, 'err');
+    }
+  }
+  return written;
+}
+
+function buildShopifyProduct(woo, cfg, wooVariations = null) {
+  const f = cfg.fields;
+  const product = {};
+
+  if (f.name) {
+    product.title = woo.name;
+    product.body_html = woo.description || woo.short_description || '';
+  }
+
+  if (f.meta) {
+    product.metafields_global_title_tag = woo.yoast_head_json?.title || woo.name;
+    product.metafields_global_description_tag = woo.yoast_head_json?.description || '';
+  }
+
+  // product_type se deja vacío por decisión de negocio: el árbol va en metaobjetos.
+  if (f.categories && woo.categories?.length) {
+    product.tags = [
+      ...(woo.categories || []).map(c => c.name),
+      ...(woo.tags || []).map(t => t.name)
+    ].join(', ');
+  }
+
+  if (f.images && woo.images?.length) {
+    product.images = woo.images.map(img => ({ src: img.src, alt: img.alt || woo.name }));
+  }
+
+  // Variantes
+  if (woo.type === 'variable') {
+    // Alta con opciones y variantes reales en el mismo POST, sin variante de relleno.
+    const plan = planVariants(woo, wooVariations || [], []);
+    if (plan.create.length) {
+      product.options = plan.optionNames.map(name => ({ name }));
+      product.variants = plan.create.map(v => ({
+        option1: v.option1, option2: v.option2, option3: v.option3,
+        price: v.price, compare_at_price: v.compare_at_price, position: v.position,
+        inventory_management: 'shopify',
+      }));
+    } else {
+      product.variants = [{ ...priceFields(woo), inventory_management: 'shopify' }];
+    }
+  } else {
+    const variant = {};
+    if (f.price) Object.assign(variant, priceFields(woo));
+    if (f.sku) variant.sku = woo.sku || '';
+    if (f.stock) variant.inventory_management = 'shopify';
+    product.variants = [variant];
+  }
+
+  product.status = 'active';
+  return { product };
+}
+
+// PUT del producto reutilizando las imágenes que ya están en Shopify (por id) y subiendo solo
+// las nuevas. Devuelve las imágenes del producto tras la actualización (con ids), para enlazar variantes.
+async function putProductWithImages(cfg, shopifyId, body, woo, wooVariations, existingImages, signal) {
+  if (cfg.fields.images) {
+    const plan = planProductImages(woo, wooVariations, existingImages || []);
+    if (plan.images) body.product.images = plan.images; else delete body.product.images;
+    if (plan.added || plan.removed) log(`  Imágenes: ${plan.reused} reutilizadas, ${plan.added} nuevas, ${plan.removed} retiradas`, 'info');
+    // Si a la vez se suben y se retiran, probablemente son los mismos archivos sin reconocer: se deja rastro.
+    if (plan.added && plan.removed) log(`  Sin reconocer → Woo: ${plan.unmatched.slice(0, 4).join(', ')} · Shopify: ${plan.retired.slice(0, 4).join(', ')}`, 'info');
+  }
+  const res = await shopifyRequest(cfg, 'PUT', `products/${shopifyId}.json`, body, signal);
+  return res?.product?.images || existingImages || [];
+}
+
+async function getWooVariations(cfg, wooId, signal) {
+  let all = [], page = 1;
+  while (true) {
+    const { data } = await wooRequest(cfg, `products/${wooId}/variations`, { per_page: 100, page }, signal);
+    all = all.concat(data);
+    if (data.length < 100) break;
+    page++;
+  }
+  return all;
+}
+
+// Renombra las opciones del producto en Shopify (p. ej. "Title" → "Talla") si no coinciden con Woo.
+async function ensureProductOptions(cfg, shopifyProduct, optionNames, signal) {
+  const current = shopifyProduct.options || [];
+  const same = current.length === optionNames.length && current.every((o, i) => normalizeTitle(o.name) === normalizeTitle(optionNames[i]));
+  if (same) return;
+  if (current.length < optionNames.length) {
+    log(`  Aviso: "${shopifyProduct.title}" tiene ${current.length} opción(es) en Shopify y Woo necesita ${optionNames.length}; solo se renombran las existentes`, 'warn');
+  }
+  const options = current.slice(0, optionNames.length).map((o, i) => ({ id: o.id, name: optionNames[i] }));
+  await shopifyRequest(cfg, 'PUT', `products/${shopifyProduct.id}.json`, { product: { id: shopifyProduct.id, options } }, signal);
+}
+
+// Sincroniza las variantes de un producto ya existente en Shopify: crea, actualiza y borra
+// emparejando por valor de opción, fija stock por variante y enlaza o sube la imagen de cada
+// variación. En modo stockOnly solo toca precio y stock de las variantes ya emparejadas.
+// `product`: producto Shopify ya descargado (evita un GET); `productImages`: imágenes actuales
+// del producto, para enlazar variantes a archivos que ya están subidos en vez de repetirlos.
+async function syncProductVariants(cfg, shopifyId, woo, wooVariations, signal, { stockOnly = false, product = null, productImages = null } = {}) {
+  if (!product || !product.variants) {
+    ({ product } = await shopifyRequest(cfg, 'GET', `products/${shopifyId}.json?fields=id,title,options,variants,images`, null, signal));
+  }
+  if (!productImages) productImages = product.images || [];
+  const plan = planVariants(woo, wooVariations, product.variants || []);
+  plan.warnings.forEach(w => log(`  ⚠ ${w}`, 'warn'));
+  const f = cfg.fields;
+  const r = { created: 0, updated: 0, deleted: 0, stocked: 0, imaged: 0, linked: 0 };
+  const touched = [];
+
+  if (!stockOnly) {
+    await ensureProductOptions(cfg, product, plan.optionNames, signal);
+    for (const v of plan.create) {
+      if (signal?.aborted) return r;
+      const variant = { option1: v.option1, option2: v.option2, option3: v.option3, price: v.price, compare_at_price: v.compare_at_price, position: v.position, inventory_management: 'shopify' };
+      const saved = await shopifyRequest(cfg, 'POST', `products/${shopifyId}/variants.json`, { variant }, signal);
+      touched.push({ ...v, id: saved.variant.id, inventory_item_id: saved.variant.inventory_item_id, hasImage: false, stockDiff: v.stock !== null });
+      r.created++;
+    }
+  }
+  for (const u of plan.update) {
+    if (signal?.aborted) return r;
+    const patch = { ...u.patch };
+    if (!f.price) { delete patch.price; delete patch.compare_at_price; }
+    if (stockOnly) delete patch.position;
+    if (Object.keys(patch).length) {
+      await shopifyRequest(cfg, 'PUT', `variants/${u.id}.json`, { variant: patch }, signal);
+      r.updated++;
+    }
+    touched.push(u);
+  }
+  if (!stockOnly) {
+    // Se borra después de crear, así el producto nunca se queda sin variantes.
+    for (const d of plan.delete) {
+      if (signal?.aborted) return r;
+      await shopifyRequest(cfg, 'DELETE', `products/${shopifyId}/variants/${d.id}.json`, null, signal);
+      r.deleted++;
+    }
+  }
+  if (f.stock) {
+    for (const t of touched) {
+      if (signal?.aborted) return r;
+      if (t.stock === null || !t.stockDiff) continue;
+      if (await setVariantStock(cfg, { inventory_item_id: t.inventory_item_id }, t.stock, signal)) r.stocked++;
+    }
+  }
+  if (f.images && !stockOnly) {
+    const { link, upload } = planVariantImageLinks(touched, productImages);
+    for (const l of link) {
+      if (signal?.aborted) return r;
+      try {
+        await shopifyRequest(cfg, 'PUT', `products/${shopifyId}/images/${l.imageId}.json`, { image: { id: l.imageId, variant_ids: l.variantIds } }, signal);
+        r.linked++;
+      } catch (e) { log(`  Aviso al enlazar imagen de variante: ${e.message}`, 'warn'); }
+    }
+    for (const t of upload) {
+      if (signal?.aborted) return r;
+      try {
+        await shopifyRequest(cfg, 'POST', `products/${shopifyId}/images.json`, { image: { src: t.imageSrc, alt: `${woo.name} - ${t.option1}`, variant_ids: [t.id] } }, signal);
+        r.imaged++;
+      } catch (e) { log(`  Aviso imagen variante "${t.option1}": ${e.message}`, 'warn'); }
+    }
+  }
+  return r;
+}
+
+const variantSummary = (r) => `variantes +${r.created} ~${r.updated} -${r.deleted}, stock ${r.stocked}, img ${r.imaged}${r.linked ? ` (+${r.linked} enlazadas)` : ''}`;
+const variantsUntouched = (r) => !r.created && !r.updated && !r.deleted && !r.stocked && !r.imaged && !r.linked;
+
+// ─── Categorías → Metaobjetos (árbol) ─────────────────────────────────────────
+// Reproduce el árbol de categorías de WooCommerce como metaobjetos `categoria` en
+// Shopify (cada uno referencia a su padre) y asigna a cada producto la lista de sus
+// categorías en el metacampo `custom.categorias`. Metaobjetos y definiciones solo
+// existen en la Admin API GraphQL, así que todo este paso va por GraphQL.
+
+const CATEGORY_METAOBJECT_TYPE = 'categoria';
+const CATEGORY_METAFIELD_NS = 'custom';
+const CATEGORY_METAFIELD_KEY = 'categorias';
+const DEFAULT_CATEGORY_NAMES = ['uncategorized', 'sin categorizar'];
+const METAFIELDS_SET_BATCH = 25;
+const WOO_ID_METAFIELD_KEY = 'woo_id';
+const WOO_ID_METAFIELD_DEF = { key: WOO_ID_METAFIELD_KEY, name: 'ID WooCommerce', type: 'number_integer', description: 'ID del producto en WooCommerce; clave de emparejamiento de la sincronización' };
+const CATEGORY_UPSERT_PAUSE_MS = 200;
+const GRAPHQL_THROTTLE_WAIT_MS = 2000;
+
+// CATTREE-PURE-BEGIN
+// Ordena las categorías de Woo padres antes que hijos, calcula la ruta legible y
+// normaliza el padre (null en raíz). Categorías por defecto de Woo se excluyen; un
+// padre inexistente, excluido o en ciclo convierte la categoría en raíz con aviso.
+function planCategoryTree(wooCats) {
+  const defaults = ['uncategorized', 'sin categorizar'];
+  const valid = (wooCats || []).filter(c => c && c.id != null && c.name && !defaults.includes(String(c.name).trim().toLowerCase()));
+  const byId = new Map(valid.map(c => [c.id, c]));
+  const warnings = [];
+
+  const parentOf = new Map();
+  for (const c of valid) {
+    const p = c.parent && c.parent !== 0 ? c.parent : null;
+    if (p !== null && !byId.has(p)) {
+      warnings.push(`Categoría "${c.name}" tiene un padre inexistente o excluido (id ${p}); se trata como raíz`);
+      parentOf.set(c.id, null);
+    } else {
+      parentOf.set(c.id, p);
+    }
+  }
+
+  // Romper ciclos: recorrer hacia arriba; si volvemos a un id visitado, cortamos ahí.
+  for (const c of valid) {
+    const seen = new Set([c.id]);
+    let cur = parentOf.get(c.id);
+    while (cur !== null) {
+      if (seen.has(cur)) {
+        const culprit = byId.get(cur);
+        warnings.push(`Ciclo de categorías detectado en "${culprit.name}"; se trata como raíz`);
+        parentOf.set(cur, null);
+        break;
+      }
+      seen.add(cur);
+      cur = parentOf.get(cur);
+    }
+  }
+
+  const rutaOf = new Map();
+  const ruta = (id) => {
+    if (rutaOf.has(id)) return rutaOf.get(id);
+    const c = byId.get(id);
+    const p = parentOf.get(id);
+    const r = p === null ? c.name : `${ruta(p)} > ${c.name}`;
+    rutaOf.set(id, r);
+    return r;
+  };
+
+  const depthOf = new Map();
+  const depth = (id) => {
+    if (depthOf.has(id)) return depthOf.get(id);
+    const p = parentOf.get(id);
+    const d = p === null ? 0 : depth(p) + 1;
+    depthOf.set(id, d);
+    return d;
+  };
+
+  const ordered = valid
+    .map(c => ({
+      id: c.id,
+      name: String(c.name).trim(),
+      slug: toShopifyHandle(c.slug || c.name),
+      description: c.description || '',
+      imageSrc: c.image && c.image.src ? c.image.src : null,
+      parentId: parentOf.get(c.id),
+      ruta: ruta(c.id),
+      depth: depth(c.id),
+    }))
+    .sort((a, b) => a.depth - b.depth || a.name.localeCompare(b.name));
+
+  return { ordered, warnings };
+}
+
+// Handle válido para Shopify a partir del slug de Woo (que llega codificado en
+// porcentaje si tiene tildes o eñes): minúsculas, ascii, guiones, sin extremos.
+function toShopifyHandle(slugOrName) {
+  let s = String(slugOrName || '');
+  try { s = decodeURIComponent(s); } catch {}
+  return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 255);
+}
+
+// Cuenta fallos de red consecutivos: un error de red suma, cualquier otro resultado reinicia.
+function nextNetworkFailureCount(prev, err) {
+  return err && err.isNetwork === true ? (prev || 0) + 1 : 0;
+}
+
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < (arr || []).length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+// CATTREE-PURE-END
+
+async function shopifyGraphQL(cfg, query, variables = {}, signal) {
+  const url = `https://${cfg.shopifyUrl}/admin/api/${cfg.shopifyVersion}/graphql.json`;
+  const res = await proxiedFetch(url, {
+    method: 'POST',
+    headers: { 'X-Shopify-Access-Token': cfg.shopifyToken, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables }),
+  }, signal);
+  if (res.status === 429) {
+    const wait = parseInt(res.headers.get('Retry-After') || '2') * 1000;
+    log(`Rate limit Shopify (GraphQL), esperando ${wait / 1000}s...`, 'warn');
+    await new Promise(r => setTimeout(r, wait));
+    return shopifyGraphQL(cfg, query, variables, signal);
+  }
+  if (res.status === 403 || res.status === 401) {
+    throw new Error(`Shopify ${res.status}: acceso denegado. La app necesita los scopes de metaobjetos; vuelve a autorizarla desde "Conectar con Shopify".`);
+  }
+  if (!res.ok) throw new Error(`Shopify GraphQL ${res.status}: ${await res.text()}`);
+  const json = await res.json();
+  if (json.errors && json.errors.length) {
+    if (json.errors.some(e => e.extensions?.code === 'THROTTLED')) {
+      log(`Throttling GraphQL, esperando ${GRAPHQL_THROTTLE_WAIT_MS / 1000}s...`, 'warn');
+      await new Promise(r => setTimeout(r, GRAPHQL_THROTTLE_WAIT_MS));
+      return shopifyGraphQL(cfg, query, variables, signal);
+    }
+    if (json.errors.some(e => e.extensions?.code === 'ACCESS_DENIED')) {
+      throw new Error('Shopify GraphQL: acceso denegado. La app necesita los scopes de metaobjetos; vuelve a autorizarla desde "Conectar con Shopify".');
+    }
+    throw new Error(`Shopify GraphQL: ${json.errors.map(e => e.message).join('; ')}`);
+  }
+  return json.data;
+}
+
+function throwUserErrors(prefix, userErrors) {
+  if (userErrors && userErrors.length) {
+    throw new Error(`${prefix}: ${userErrors.map(e => `${(e.field || []).join('.')} ${e.message}`.trim()).join('; ')}`);
+  }
+}
+
+// Crea (si no existe) la definición de metaobjeto `categoria` y devuelve su GID.
+// `padre` se autorreferencia, así que se añade en un segundo paso con el id ya creado.
+async function ensureCategoryMetaobjectDefinition(cfg, signal) {
+  const found = await shopifyGraphQL(cfg, `
+    query($type: String!) { metaobjectDefinitionByType(type: $type) { id fieldDefinitions { key } } }
+  `, { type: CATEGORY_METAOBJECT_TYPE }, signal);
+
+  let def = found.metaobjectDefinitionByType;
+  if (!def) {
+    const created = await shopifyGraphQL(cfg, `
+      mutation($definition: MetaobjectDefinitionCreateInput!) {
+        metaobjectDefinitionCreate(definition: $definition) {
+          metaobjectDefinition { id fieldDefinitions { key } }
+          userErrors { field message }
+        }
+      }
+    `, {
+      definition: {
+        type: CATEGORY_METAOBJECT_TYPE,
+        name: 'Categoría',
+        displayNameKey: 'nombre',
+        access: { storefront: 'PUBLIC_READ' },
+        fieldDefinitions: [
+          { key: 'nombre', name: 'Nombre', type: 'single_line_text_field', required: true },
+          { key: 'slug', name: 'Slug', type: 'single_line_text_field' },
+          { key: 'descripcion', name: 'Descripción', type: 'multi_line_text_field' },
+          { key: 'ruta', name: 'Ruta', type: 'single_line_text_field' },
+          { key: 'imagen', name: 'Imagen (URL)', type: 'url' },
+          { key: 'woo_id', name: 'ID WooCommerce', type: 'number_integer' },
+        ],
+      },
+    }, signal);
+    throwUserErrors('No se pudo crear la definición "Categoría"', created.metaobjectDefinitionCreate.userErrors);
+    def = created.metaobjectDefinitionCreate.metaobjectDefinition;
+    log('+ Definición de metaobjeto "Categoría" creada', 'ok');
+  }
+
+  const hasPadre = (def.fieldDefinitions || []).some(f => f.key === 'padre');
+  if (!hasPadre) {
+    const updated = await shopifyGraphQL(cfg, `
+      mutation($id: ID!, $definition: MetaobjectDefinitionUpdateInput!) {
+        metaobjectDefinitionUpdate(id: $id, definition: $definition) {
+          metaobjectDefinition { id }
+          userErrors { field message }
+        }
+      }
+    `, {
+      id: def.id,
+      definition: {
+        fieldDefinitions: [{
+          create: {
+            key: 'padre', name: 'Categoría padre', type: 'metaobject_reference',
+            validations: [{ name: 'metaobject_definition_id', value: def.id }],
+          },
+        }],
+      },
+    }, signal);
+    throwUserErrors('No se pudo añadir el campo "padre"', updated.metaobjectDefinitionUpdate.userErrors);
+    log('+ Campo "padre" añadido a la definición "Categoría"', 'ok');
+  }
+  return def.id;
+}
+
+// Crea (si no existe) la definición del metacampo de producto custom.categorias.
+async function ensureCategoryMetafieldDefinition(cfg, metaobjectDefinitionId, signal) {
+  const found = await shopifyGraphQL(cfg, `
+    query($ns: String!, $key: String!) {
+      metafieldDefinitions(first: 1, ownerType: PRODUCT, namespace: $ns, key: $key) { nodes { id } }
+    }
+  `, { ns: CATEGORY_METAFIELD_NS, key: CATEGORY_METAFIELD_KEY }, signal);
+  if (found.metafieldDefinitions.nodes.length) return;
+
+  const created = await shopifyGraphQL(cfg, `
+    mutation($definition: MetafieldDefinitionInput!) {
+      metafieldDefinitionCreate(definition: $definition) {
+        createdDefinition { id }
+        userErrors { field message }
+      }
+    }
+  `, {
+    definition: {
+      name: 'Categorías',
+      namespace: CATEGORY_METAFIELD_NS,
+      key: CATEGORY_METAFIELD_KEY,
+      type: 'list.metaobject_reference',
+      ownerType: 'PRODUCT',
+      access: { storefront: 'PUBLIC_READ' },
+      validations: [{ name: 'metaobject_definition_id', value: metaobjectDefinitionId }],
+    },
+  }, signal);
+  throwUserErrors('No se pudo crear el metacampo custom.categorias', created.metafieldDefinitionCreate.userErrors);
+  log('+ Definición de metacampo custom.categorias creada', 'ok');
+}
+
+async function getAllWooCategories(cfg, signal) {
+  let all = [], page = 1;
+  while (true) {
+    const { data } = await wooRequest(cfg, 'products/categories', { per_page: 100, page }, signal);
+    all = all.concat(data);
+    if (data.length < 100) break;
+    page++;
+  }
+  return all;
+}
+
+function categoryMetaobjectFields(cat, parentGid) {
+  const fields = [
+    { key: 'nombre', value: cat.name },
+    { key: 'slug', value: cat.slug },
+    { key: 'ruta', value: cat.ruta },
+    { key: 'woo_id', value: String(cat.id) },
+  ];
+  if (cat.description) fields.push({ key: 'descripcion', value: cat.description });
+  if (cat.imageSrc && /^https?:\/\//.test(cat.imageSrc)) fields.push({ key: 'imagen', value: cat.imageSrc });
+  if (parentGid) fields.push({ key: 'padre', value: parentGid });
+  return fields;
+}
+
+// Upsert de cada categoría por handle (= slug de Woo). Devuelve el mapa wooId → GID.
+async function upsertCategoryMetaobjects(cfg, ordered, signal) {
+  const gidByWooId = new Map();
+  let ok = 0;
+  for (const cat of ordered) {
+    if (signal?.aborted) break;
+    const parentGid = cat.parentId !== null ? gidByWooId.get(cat.parentId) : null;
+    if (cat.parentId !== null && !parentGid) {
+      log(`↷ "${cat.name}": su padre no se pudo crear; se sube a raíz`, 'warn');
+    }
+    try {
+      const data = await shopifyGraphQL(cfg, `
+        mutation($handle: MetaobjectHandleInput!, $metaobject: MetaobjectUpsertInput!) {
+          metaobjectUpsert(handle: $handle, metaobject: $metaobject) {
+            metaobject { id }
+            userErrors { field message }
+          }
+        }
+      `, {
+        handle: { type: CATEGORY_METAOBJECT_TYPE, handle: cat.slug },
+        metaobject: { fields: categoryMetaobjectFields(cat, parentGid) },
+      }, signal);
+      throwUserErrors('Upsert', data.metaobjectUpsert.userErrors);
+      gidByWooId.set(cat.id, data.metaobjectUpsert.metaobject.id);
+      log(`+ Categoría: ${cat.ruta}`, 'ok');
+      ok++;
+      await new Promise(r => setTimeout(r, CATEGORY_UPSERT_PAUSE_MS));
+    } catch (e) {
+      log(`✗ Error categoría "${cat.name}": ${e.message}`, 'err');
+    }
+  }
+  return { gidByWooId, ok };
+}
+
+// Asigna a cada producto de Shopify la lista de GIDs de sus categorías en custom.categorias.
+async function assignCategoriesToProducts(cfg, wooProducts, gidByWooId, signal) {
+  log('Asignando categorías a productos...', 'info');
+  const { idOf } = shopifyResolver(wooProducts, await getAllShopifyProducts(cfg, signal));
+
+  const metafields = [];
+  let unmatched = 0;
+  for (const woo of wooProducts) {
+    const shopifyId = idOf(woo);
+    if (!shopifyId) { unmatched++; continue; }
+    const gids = (woo.categories || []).map(c => gidByWooId.get(c.id)).filter(Boolean);
+    if (!gids.length) continue;
+    metafields.push({
+      ownerId: `gid://shopify/Product/${shopifyId}`,
+      namespace: CATEGORY_METAFIELD_NS,
+      key: CATEGORY_METAFIELD_KEY,
+      type: 'list.metaobject_reference',
+      value: JSON.stringify(gids),
+    });
+  }
+
+  let assigned = 0;
+  for (const batch of chunk(metafields, METAFIELDS_SET_BATCH)) {
+    if (signal?.aborted) break;
+    try {
+      const data = await shopifyGraphQL(cfg, `
+        mutation($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) { metafields { id } userErrors { field message } }
+        }
+      `, { metafields: batch }, signal);
+      throwUserErrors('metafieldsSet', data.metafieldsSet.userErrors);
+      assigned += batch.length;
+    } catch (e) {
+      log(`✗ Error asignando categorías (lote de ${batch.length}): ${e.message}`, 'err');
+    }
+  }
+  return { assigned, unmatched };
+}
+
+// ─── Metacampos de producto: descripción corta, destacado, upsells ───────────
+const PRODUCT_METAFIELD_DEFS = [
+  { key: 'descripcion_corta', name: 'Descripción corta', type: 'multi_line_text_field', description: 'Descripción corta de WooCommerce (HTML)' },
+  { key: 'destacado', name: 'Destacado', type: 'boolean', description: 'Producto destacado en WooCommerce' },
+  { key: 'upsells', name: 'Productos relacionados (upsell)', type: 'list.product_reference', description: 'Upsells de WooCommerce' },
+];
+
+async function ensureProductMetafieldDefinitions(cfg, signal, defs = PRODUCT_METAFIELD_DEFS) {
+  const found = await shopifyGraphQL(cfg, `
+    query($ns: String!) { metafieldDefinitions(first: 50, ownerType: PRODUCT, namespace: $ns) { nodes { key } } }
+  `, { ns: CATEGORY_METAFIELD_NS }, signal);
+  const have = new Set(found.metafieldDefinitions.nodes.map(n => n.key));
+  for (const def of defs) {
+    if (have.has(def.key)) continue;
+    const created = await shopifyGraphQL(cfg, `
+      mutation($definition: MetafieldDefinitionInput!) {
+        metafieldDefinitionCreate(definition: $definition) { createdDefinition { id } userErrors { field message } }
+      }
+    `, { definition: { namespace: CATEGORY_METAFIELD_NS, key: def.key, name: def.name, type: def.type, description: def.description, ownerType: 'PRODUCT', access: { storefront: 'PUBLIC_READ' } } }, signal);
+    throwUserErrors(`No se pudo crear el metacampo custom.${def.key}`, created.metafieldDefinitionCreate.userErrors);
+    log(`+ Definición de metacampo custom.${def.key} creada`, 'ok');
+  }
+}
+
+// Metacampos de un producto Woo ya emparejado con Shopify. resolveId: id Woo → id Shopify.
+function productMetafields(woo, shopifyId, resolveId) {
+  const ownerId = `gid://shopify/Product/${shopifyId}`;
+  const out = [];
+  const corta = String(woo.short_description || '').trim();
+  if (corta) out.push({ ownerId, namespace: CATEGORY_METAFIELD_NS, key: 'descripcion_corta', type: 'multi_line_text_field', value: corta });
+  out.push({ ownerId, namespace: CATEGORY_METAFIELD_NS, key: 'destacado', type: 'boolean', value: woo.featured ? 'true' : 'false' });
+  const upsells = (woo.upsell_ids || []).map(resolveId).filter(Boolean).map(id => `gid://shopify/Product/${id}`);
+  if (upsells.length) out.push({ ownerId, namespace: CATEGORY_METAFIELD_NS, key: 'upsells', type: 'list.product_reference', value: JSON.stringify(upsells) });
+  return out;
+}
+
+async function syncProductMetafields(cfg, wooProducts, signal) {
+  log('=== Sincronizando metacampos de producto (descripción corta, destacado, upsells) ===', 'info');
+  try {
+    await ensureProductMetafieldDefinitions(cfg, signal);
+  } catch (e) {
+    log(`✗ No se pudieron preparar las definiciones de metacampos: ${e.message}`, 'err');
+    return;
+  }
+  const { idOf: shopifyIdOf } = shopifyResolver(wooProducts, await getAllShopifyProducts(cfg, signal));
+  const wooById = new Map(wooProducts.map(w => [w.id, w]));
+  const resolveId = (wooId) => { const w = wooById.get(wooId); return w ? shopifyIdOf(w) : null; };
+
+  const metafields = [];
+  let unmatched = 0;
+  for (const woo of wooProducts) {
+    const shopifyId = shopifyIdOf(woo);
+    if (!shopifyId) { unmatched++; continue; }
+    metafields.push(...productMetafields(woo, shopifyId, resolveId));
+  }
+  let written = 0;
+  for (const batch of chunk(metafields, METAFIELDS_SET_BATCH)) {
+    if (signal?.aborted) break;
+    try {
+      const data = await shopifyGraphQL(cfg, `
+        mutation($metafields: [MetafieldsSetInput!]!) {
+          metafieldsSet(metafields: $metafields) { metafields { id } userErrors { field message } }
+        }
+      `, { metafields: batch }, signal);
+      throwUserErrors('metafieldsSet', data.metafieldsSet.userErrors);
+      written += batch.length;
+    } catch (e) {
+      log(`✗ Error escribiendo metacampos (lote de ${batch.length}): ${e.message}`, 'err');
+    }
+  }
+  log(`=== Metacampos: ${written} escritos en ${wooProducts.length - unmatched} productos · ${unmatched} sin match en Shopify ===`, 'ok');
+}
+
+async function syncCategoryTree(cfg, signal, wooProducts) {
+  log('=== Sincronizando categorías → metaobjetos (árbol) ===', 'info');
+
+  let metaobjectDefinitionId;
+  try {
+    metaobjectDefinitionId = await ensureCategoryMetaobjectDefinition(cfg, signal);
+    await ensureCategoryMetafieldDefinition(cfg, metaobjectDefinitionId, signal);
+  } catch (e) {
+    log(`✗ No se pudieron preparar las definiciones de categorías: ${e.message}`, 'err');
+    return;
+  }
+
+  const wooCats = await getAllWooCategories(cfg, signal);
+  const { ordered, warnings } = planCategoryTree(wooCats);
+  warnings.forEach(w => log(`⚠ ${w}`, 'warn'));
+  log(`WooCommerce: ${ordered.length} categorías a sincronizar`, 'info');
+
+  const { gidByWooId, ok } = await upsertCategoryMetaobjects(cfg, ordered, signal);
+  if (signal?.aborted) return;
+
+  const products = wooProducts || await getAllWooProducts(cfg, signal);
+  const { assigned, unmatched } = await assignCategoriesToProducts(cfg, products, gidByWooId, signal);
+
+  log(`=== Categorías: ${ok}/${ordered.length} metaobjetos · ${assigned} productos asignados · ${unmatched} sin match en Shopify ===`, 'ok');
+}
+
+// ─── Pedidos ──────────────────────────────────────────────────────────────────
+async function syncOrders(cfg, signal) {
+  log('=== Sincronizando pedidos ===', 'info');
+
+  // 1. Obtener pedidos de WooCommerce
+  let wooOrders = [];
+  let page = 1;
+  while (true) {
+    const { data } = await wooRequest(cfg, 'orders', { per_page: 100, page, orderby: 'date', order: 'asc' }, signal);
+    wooOrders = wooOrders.concat(data);
+    log(`WooCommerce: página ${page} — ${data.length} pedidos`, 'info');
+    if (data.length < 100) break;
+    page++;
+  }
+  log(`Total pedidos WooCommerce: ${wooOrders.length}`, 'ok');
+
+  // 2. Mapear productos por SKU para obtener variant_id en Shopify
+  let shopifyVariants = {};
+  try {
+    let nextUrl = `https://${cfg.shopifyUrl}/admin/api/${cfg.shopifyVersion}/products.json?limit=250&fields=id,variants,title`;
+    while (nextUrl) {
+      const res = await proxiedFetch(nextUrl, { headers: { 'X-Shopify-Access-Token': cfg.shopifyToken, 'Content-Type': 'application/json' } }, signal);
+      const data = await res.json();
+      (data.products || []).forEach(p => {
+        (p.variants || []).forEach(v => {
+          if (v.sku) shopifyVariants[v.sku] = { variant_id: v.id, product_id: p.id };
+        });
+        shopifyVariants[`__title__${p.title}`] = { product_id: p.id, variant_id: p.variants?.[0]?.id };
+      });
+      const linkHeader = res.headers.get('Link');
+      nextUrl = linkHeader?.match(/<([^>]+)>; rel="next"/)?.[1] || null;
+    }
+  } catch (e) { log(`Aviso: no se pudo indexar productos Shopify: ${e.message}`, 'warn'); }
+
+  // 3. Crear pedidos en Shopify
+  let okCount = 0, errCount = 0;
+  const statusMap = {
+    'processing': 'unfulfilled', 'completed': 'fulfilled', 'on-hold': 'unfulfilled',
+    'pending': 'unfulfilled', 'cancelled': null, 'refunded': null, 'failed': null,
+  };
+
+  for (let i = 0; i < wooOrders.length; i++) {
+    if (signal?.aborted) break;
+    const wo = wooOrders[i];
+    updateProgress(i + 1, wooOrders.length, `Pedido #${wo.number}`);
+
+    // Saltar cancelados/reembolsados
+    if (['cancelled', 'refunded', 'failed'].includes(wo.status)) {
+      log(`↷ Pedido #${wo.number} omitido (${wo.status})`, 'warn');
+      continue;
+    }
+
+    try {
+      // Mapear line items
+      const lineItems = wo.line_items.map(item => {
+        const match = shopifyVariants[item.sku] || shopifyVariants[`__title__${item.name}`];
+        if (match) {
+          return { variant_id: match.variant_id, quantity: item.quantity, price: item.price };
+        }
+        return { title: item.name, quantity: item.quantity, price: item.price };
+      });
+
+      const fulfillmentStatus = statusMap[wo.status] || 'unfulfilled';
+      const financialStatus = wo.date_paid ? 'paid' : 'pending';
+
+      const order = {
+        order: {
+          line_items: lineItems,
+          financial_status: financialStatus,
+          fulfillment_status: fulfillmentStatus === 'fulfilled' ? 'fulfilled' : null,
+          created_at: wo.date_created,
+          note: `Importado de WooCommerce — Pedido #${wo.number}`,
+          tags: `woo-import,woo-${wo.number}`,
+          currency: wo.currency || 'EUR',
+          total_tax: wo.total_tax || '0',
+          transactions: [{
+            kind: 'sale',
+            status: financialStatus === 'paid' ? 'success' : 'pending',
+            amount: wo.total,
+            gateway: wo.payment_method_title || 'manual',
+          }],
+        }
+      };
+
+      // Datos del cliente
+      if (wo.billing) {
+        order.order.billing_address = {
+          first_name: wo.billing.first_name, last_name: wo.billing.last_name,
+          address1: wo.billing.address_1, address2: wo.billing.address_2,
+          city: wo.billing.city, province: wo.billing.state,
+          country: wo.billing.country, zip: wo.billing.postcode,
+          phone: wo.billing.phone,
+        };
+        order.order.email = wo.billing.email;
+      }
+      if (wo.shipping?.address_1) {
+        order.order.shipping_address = {
+          first_name: wo.shipping.first_name, last_name: wo.shipping.last_name,
+          address1: wo.shipping.address_1, address2: wo.shipping.address_2,
+          city: wo.shipping.city, province: wo.shipping.state,
+          country: wo.shipping.country, zip: wo.shipping.postcode,
+        };
+      }
+
+      // Costes de envío
+      if (wo.shipping_lines?.length) {
+        order.order.shipping_lines = wo.shipping_lines.map(sl => ({
+          title: sl.method_title || 'Envío',
+          price: sl.total || '0',
+          code: sl.method_id || 'standard',
+        }));
+      }
+
+      await shopifyRequest(cfg, 'POST', 'orders.json', order, signal);
+      log(`+ Pedido #${wo.number} creado (${wo.billing?.first_name} ${wo.billing?.last_name})`, 'ok');
+      okCount++;
+      await new Promise(r => setTimeout(r, 500));
+
+    } catch (e) {
+      log(`✗ Error pedido #${wo.number}: ${e.message}`, 'err');
+      errCount++;
+    }
+  }
+
+  log(`=== Pedidos: ${okCount} creados, ${errCount} errores ===`, 'ok');
+}
+
+// ─── Shopify OAuth ────────────────────────────────────────────────────────────
+function authShopify() {
+  const shop = document.getElementById('shopifyUrl').value.replace(/\/$/, '');
+  const clientId = document.getElementById('shopifyClientId').value;
+  if (!shop || !clientId) { alert('Ingresa la URL de la tienda y el Client ID'); return; }
+
+  log('Abriendo ventana de autenticación Shopify...', 'info');
+  const authWindow = window.open(
+    `/auth/shopify?shop=${encodeURIComponent(shop)}&client_id=${encodeURIComponent(clientId)}`,
+    'shopify-auth', 'width=600,height=700'
+  );
+
+  // Escuchar el mensaje con el token desde la ventana de callback
+  window.addEventListener('message', function handler(e) {
+    if (e.data?.type === 'shopify-token' && e.data.token) {
+      document.getElementById('shopifyToken').value = e.data.token;
+      document.getElementById('shopifyToken').removeAttribute('readonly');
+      log(`✓ Token de Shopify obtenido: ${e.data.token.slice(0, 12)}...`, 'ok');
+      window.removeEventListener('message', handler);
+    }
+  });
+
+  // Fallback: polling del servidor por si postMessage falla
+  const pollInterval = setInterval(async () => {
+    try {
+      const res = await fetch('/auth/shopify/token');
+      const data = await res.json();
+      if (data.token && !document.getElementById('shopifyToken').value) {
+        document.getElementById('shopifyToken').value = data.token;
+        document.getElementById('shopifyToken').removeAttribute('readonly');
+        log(`✓ Token de Shopify obtenido (polling): ${data.token.slice(0, 12)}...`, 'ok');
+        clearInterval(pollInterval);
+      }
+    } catch {}
+  }, 1000);
+
+  // Dejar de intentar después de 2 minutos
+  setTimeout(() => clearInterval(pollInterval), 120000);
+}
+
+// ─── Comparación de inventario ───────────────────────────────────────────────
+// COMPARE-PURE-BEGIN
+const normalizeTitle = (t) => String(t || '').trim().toLowerCase();
+
+// Solo se sincronizan productos publicados y no ocultos en Woo. Borradores y productos con
+// visibilidad "Oculto" se ignoran por decisión de negocio (2026-09-15). "Solo tienda" (catalog)
+// y "Solo buscador" (search) sí son visibles para el cliente y se sincronizan.
+function isSyncableWooProduct(woo) {
+  if (!woo || woo.status !== 'publish') return false;
+  return (woo.catalog_visibility || 'visible') !== 'hidden';
+}
+const toNumberOrNull = (v) => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+};
+const toPrice = toNumberOrNull;
+
+function summarizeShopify(p) {
+  const variants = p.variants || [];
+  const prices = variants.map(v => toPrice(v.price)).filter(n => n !== null && !Number.isNaN(n));
+  const qtys = variants.map(v => Number(v.inventory_quantity) || 0);
+  const stock = qtys.reduce((acc, q) => acc + q, 0);
+  return { id: p.id, price: prices.length ? Math.min(...prices) : null, stock, qtys };
+}
+
+// Títulos repetidos en WooCommerce (normalizados). Sin SKU, dos productos con el mismo
+// título son indistinguibles hasta que llevan woo_id en Shopify.
+function findWooTitleCollisions(wooProducts) {
+  const groups = new Map();
+  wooProducts.forEach(w => {
+    const key = normalizeTitle(w.name);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(w.id);
+  });
+  return [...groups.entries()].filter(([, ids]) => ids.length > 1).map(([title, ids]) => ({ title, ids }));
+}
+
+// Emparejamiento uno a uno WooCommerce → Shopify. Cada producto de Shopify puede ser pareja de
+// un solo producto de WooCommerce. Primero por woo_id (metacampo escrito por esta herramienta,
+// resiste renombrados y títulos repetidos); después por SKU; después por título normalizado,
+// prefiriendo el de igual precio y, en su defecto, el más antiguo (id menor). Lo que queda sin
+// pareja en Shopify es un sobrante: WooCommerce es el dato maestro.
+function pairCatalogs(wooProducts, shopifyProducts) {
+  const byWooId = new Map();
+  const bySku = new Map();
+  const byTitle = new Map();
+  [...shopifyProducts].sort((a, b) => a.id - b.id).forEach(p => {
+    const wid = toNumberOrNull(p.wooId);
+    if (wid !== null && !byWooId.has(wid)) byWooId.set(wid, p);
+    (p.variants || []).forEach(v => { if (v.sku && !bySku.has(v.sku)) bySku.set(v.sku, p); });
+    const key = normalizeTitle(p.title);
+    if (!byTitle.has(key)) byTitle.set(key, []);
+    byTitle.get(key).push(p);
+  });
+
+  const consumed = new Set();
+  const pairs = new Map(); // woo.id → producto Shopify
+  // Pasada 0: woo_id
+  wooProducts.forEach(w => {
+    const sp = byWooId.get(w.id);
+    if (sp && !consumed.has(sp.id)) { pairs.set(w.id, sp); consumed.add(sp.id); }
+  });
+  // Pasada 1: SKU
+  wooProducts.forEach(w => {
+    if (pairs.has(w.id)) return;
+    const sp = w.sku ? bySku.get(w.sku) : null;
+    if (sp && !consumed.has(sp.id)) { pairs.set(w.id, sp); consumed.add(sp.id); }
+  });
+  // Pasada 2: título, entre los no consumidos. Primero las parejas con el mismo precio (así,
+  // si varios Woo comparten título, el de igual precio se queda con el Shopify existente) y
+  // después el resto, que se lleva el candidato más antiguo.
+  const byTitleFree = (w) => (byTitle.get(normalizeTitle(w.name)) || []).filter(p => !consumed.has(p.id));
+  wooProducts.forEach(w => {
+    if (pairs.has(w.id)) return;
+    const wooPrice = toPrice(w.price);
+    if (wooPrice === null) return;
+    const sp = byTitleFree(w).find(p => summarizeShopify(p).price === wooPrice);
+    if (sp) { pairs.set(w.id, sp); consumed.add(sp.id); }
+  });
+  wooProducts.forEach(w => {
+    if (pairs.has(w.id)) return;
+    const sp = byTitleFree(w)[0];
+    if (sp) { pairs.set(w.id, sp); consumed.add(sp.id); }
+  });
+  const unmatchedShopify = shopifyProducts.filter(p => !consumed.has(p.id));
+  return { pairs, unmatchedShopify };
+}
+
+// Devuelve una fila por producto (unión de ambos catálogos) con su estado.
+function compareCatalogs(wooProducts, shopifyProducts) {
+  const { pairs, unmatchedShopify } = pairCatalogs(wooProducts, shopifyProducts);
+
+  const rows = wooProducts.map(w => {
+    const sp = pairs.get(w.id) || null;
+    // En un producto variable el stock_quantity del padre no dice nada de las tallas (cada una
+    // puede gestionar el suyo aunque el padre tenga manage_stock); sin descargar las variaciones
+    // solo es comparable el precio.
+    const woo = { id: w.id, price: toPrice(w.price), stock: w.type === 'variable' ? null : toNumberOrNull(w.stock_quantity) };
+    if (!sp) return { name: w.name, sku: w.sku || '', woo, shopify: null, status: 'woo_only', hidden: !isSyncableWooProduct(w), priceDiff: false, stockDiff: false };
+    const shopify = summarizeShopify(sp);
+    const priceDiff = woo.price !== null && shopify.price !== null && woo.price !== shopify.price;
+    const stockDiff = woo.stock !== null && woo.stock !== shopify.stock;
+    return { name: w.name, sku: w.sku || '', woo, shopify, status: (priceDiff || stockDiff) ? 'diff' : 'synced', priceDiff, stockDiff };
+  });
+
+  unmatchedShopify.forEach(p => {
+    rows.push({ name: p.title, sku: (p.variants || []).map(v => v.sku).filter(Boolean)[0] || '', woo: null, shopify: summarizeShopify(p), status: 'shopify_only', priceDiff: false, stockDiff: false });
+  });
+
+  const order = { diff: 0, woo_only: 1, shopify_only: 2, synced: 3 };
+  return rows.sort((a, b) => (order[a.status] - order[b.status]) || a.name.localeCompare(b.name, 'es'));
+}
+// Productos de Shopify que sobran tras el emparejamiento uno a uno. Mismo criterio que la
+// comparación, así la lista "Solo Shopify" y la de borrado coinciden. Con WooCommerce vacío, nada.
+function findShopifyOrphans(wooProducts, shopifyProducts) {
+  if (!wooProducts.length) return [];
+  return pairCatalogs(wooProducts, shopifyProducts).unmatchedShopify.map(p => ({ id: p.id, name: p.title }));
+}
+// Qué hay que cambiar en Shopify para un producto simple. Sin variante conocida, todo.
+function stockUpdatePlan(woo, shopifyVariant) {
+  if (!shopifyVariant) return { priceDiff: true, stockDiff: true };
+  const wooPrice = toNumberOrNull(woo.price) ?? 0;
+  const wooStock = toNumberOrNull(woo.stock_quantity);
+  const priceDiff = wooPrice !== (toNumberOrNull(shopifyVariant.price) ?? 0);
+  const stockDiff = wooStock !== null && wooStock !== (toNumberOrNull(shopifyVariant.inventory_quantity) ?? 0);
+  return { priceDiff, stockDiff };
+}
+// COMPARE-PURE-END
+
+// VARIANTS-PURE-BEGIN
+// ─── Variantes: lógica pura ───────────────────────────────────────────────────
+// La tienda no tiene SKUs, así que las variantes se emparejan por el valor de sus
+// opciones (p. ej. la talla), nunca por SKU.
+const DEFAULT_OPTION_NAME = 'Título';
+const DEFAULT_OPTION_VALUE = 'Única';
+const MAX_SHOPIFY_OPTIONS = 3;
+
+const money = (n) => (Math.round(n * 100) / 100).toFixed(2);
+
+// Precio vigente y precio tachado (regular) cuando hay rebaja real.
+function priceFields(item) {
+  const price = toNumberOrNull(item?.price) ?? toNumberOrNull(item?.sale_price) ?? toNumberOrNull(item?.regular_price) ?? 0;
+  const regular = toNumberOrNull(item?.regular_price);
+  const compareAt = regular !== null && regular > price ? regular : null;
+  return { price: money(price), compare_at_price: compareAt === null ? null : money(compareAt) };
+}
+
+// Nombres de opción del producto Shopify a partir de los atributos de variación de Woo.
+function productOptionNames(woo) {
+  const names = (woo?.attributes || []).filter(a => a && a.variation).map(a => String(a.name || '').trim()).filter(Boolean).slice(0, MAX_SHOPIFY_OPTIONS);
+  return names.length ? names : [DEFAULT_OPTION_NAME];
+}
+
+// Valores de opción de una variación, alineados con los nombres de opción del producto.
+function variationOptionValues(variation, optionNames) {
+  const attrs = variation?.attributes || [];
+  return optionNames.map((name, i) => {
+    const byName = attrs.find(a => normalizeTitle(a.name) === normalizeTitle(name));
+    const a = byName || attrs[i];
+    const v = a && a.option ? String(a.option).trim() : '';
+    return v || DEFAULT_OPTION_VALUE;
+  });
+}
+
+// Stock a fijar en Shopify: número si Woo lo gestiona, 0 si está marcado agotado, null si no se toca.
+function variationStock(variation, parent) {
+  const manage = variation?.manage_stock;
+  if (manage === 'parent') return parent?.manage_stock ? toNumberOrNull(parent.stock_quantity) : (variation.stock_status === 'outofstock' ? 0 : null);
+  if (manage === true) return toNumberOrNull(variation.stock_quantity);
+  return variation?.stock_status === 'outofstock' ? 0 : null;
+}
+
+const optionKey = (values) => values.map(normalizeTitle).join('|');
+const shopifyVariantValues = (v, n) => [v.option1, v.option2, v.option3].slice(0, n).map(x => x == null ? DEFAULT_OPTION_VALUE : String(x));
+
+// Plan de variantes para un producto: qué crear, qué actualizar (solo campos que cambian)
+// y qué borrar en Shopify, emparejando por valores de opción.
+function planVariants(woo, wooVariations, shopifyVariants) {
+  const optionNames = productOptionNames(woo);
+  const warnings = [];
+  const wanted = [];
+  const seen = new Set();
+  (wooVariations || []).filter(v => v && (v.status || 'publish') === 'publish').forEach((v, i) => {
+    const values = variationOptionValues(v, optionNames);
+    const key = optionKey(values);
+    if (seen.has(key)) { warnings.push(`"${woo?.name || ''}": variación duplicada para ${values.join(' / ')} (id Woo ${v.id}); se ignora`); return; }
+    seen.add(key);
+    const pf = priceFields(v);
+    wanted.push({
+      key, wooId: v.id, values,
+      option1: values[0], option2: values[1] ?? null, option3: values[2] ?? null,
+      price: pf.price, compare_at_price: pf.compare_at_price,
+      position: wanted.length + 1,
+      inventory_management: 'shopify',
+      stock: variationStock(v, woo),
+      imageSrc: v.image && v.image.src ? v.image.src : null,
+    });
+  });
+  if (!wanted.length) warnings.push(`"${woo?.name || ''}": el producto variable no tiene variaciones publicadas en WooCommerce`);
+  const inherited = (wooVariations || []).filter(v => v && v.manage_stock === 'parent' && woo?.manage_stock).map(v => variationOptionValues(v, optionNames).join(' / '));
+  if (inherited.length) warnings.push(`"${woo?.name || ''}": la talla ${inherited.join(', ')} hereda el stock del padre (${toNumberOrNull(woo.stock_quantity) ?? 0}); Shopify no tiene stock compartido y se replica esa cantidad en cada una`);
+
+  const existing = new Map((shopifyVariants || []).map(sv => [optionKey(shopifyVariantValues(sv, optionNames.length)), sv]));
+  const create = [], update = [];
+  for (const w of wanted) {
+    const sv = existing.get(w.key);
+    if (!sv) { create.push(w); continue; }
+    existing.delete(w.key);
+    const patch = {};
+    if (money(toNumberOrNull(sv.price) ?? 0) !== w.price) patch.price = w.price;
+    const svCompare = toNumberOrNull(sv.compare_at_price);
+    if ((svCompare === null ? null : money(svCompare)) !== w.compare_at_price) patch.compare_at_price = w.compare_at_price;
+    if (Number(sv.position) !== w.position) patch.position = w.position;
+    const stockDiff = w.stock !== null && w.stock !== (toNumberOrNull(sv.inventory_quantity) ?? 0);
+    update.push({ ...w, id: sv.id, inventory_item_id: sv.inventory_item_id, hasImage: !!sv.image_id, imageId: sv.image_id || null, patch, stockDiff });
+  }
+  // Nunca vaciar un producto: si Woo no aporta variaciones, no se borra nada.
+  const toDelete = wanted.length ? [...existing.values()].map(sv => ({ id: sv.id, option1: sv.option1 })) : [];
+  return { optionNames, create, update, delete: toDelete, warnings };
+}
+// VARIANTS-PURE-END
+
+// IMAGES-PURE-BEGIN
+// ─── Imágenes: lógica pura ────────────────────────────────────────────────────
+// Shopify conserva el nombre de archivo de la imagen original (y a veces le añade un sufijo
+// "_xxxx" si ya existía uno igual), así que el nombre sin ruta, extensión ni query sirve para
+// reconocer en Shopify una imagen que viene de Woo sin volver a subirla.
+// Shopify además descarta o sustituye caracteres como "@" y cambia "-" por "_", así que la clave
+// se queda solo con letras y dígitos.
+function imageKey(src) {
+  const file = String(src || '').split('?')[0].split('#')[0].split('/').pop() || '';
+  let name = file;
+  try { name = decodeURIComponent(file); } catch (e) { /* nombre con % suelto: se usa tal cual */ }
+  return name.toLowerCase()
+    .replace(/\.[a-z0-9]+$/, '')
+    .replace(/_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, '')
+    .replace(/_[0-9a-f]{6,}$/, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+// Busca en `available` (Map clave → imagen) la imagen de Woo con clave `key`. Primero igualdad;
+// si no, una clave termina en la otra (mínimo 10 caracteres): Shopify a veces antepone algo al
+// nombre ("%40foo" → "40foo" o "_foo") y así se reconoce igual. Se consume la imagen encontrada.
+const IMAGE_KEY_SUFFIX_MIN = 10;
+function takeImageByKey(available, key) {
+  if (!key) return null;
+  let found = available.has(key) ? key : null;
+  if (!found && key.length >= IMAGE_KEY_SUFFIX_MIN) {
+    for (const k of available.keys()) {
+      if (k.length >= IMAGE_KEY_SUFFIX_MIN && (k.endsWith(key) || key.endsWith(k))) { found = k; break; }
+    }
+  }
+  if (!found) return null;
+  const img = available.get(found);
+  available.delete(found);
+  return img;
+}
+
+// Lista de imágenes para el PUT del producto: las que ya están en Shopify van por id (se
+// conservan intactas, incluidas sus variantes enlazadas), las nuevas por src, y las que Woo ya no
+// tiene se dejan fuera (Shopify las elimina). Las imágenes de variación entran una sola vez.
+// Devuelve images = null cuando Woo no aporta imágenes: entonces no se toca nada en Shopify.
+// `unmatched` y `retired` llevan los nombres de archivo para diagnosticar por qué no se reconocen.
+function planProductImages(woo, wooVariations, existingImages) {
+  const wanted = [];
+  const seen = new Set();
+  const push = (src, alt) => {
+    const key = imageKey(src);
+    if (!src || !key || seen.has(key)) return;
+    seen.add(key);
+    wanted.push({ key, src, alt });
+  };
+  (woo?.images || []).forEach(img => push(img?.src, img?.alt || woo.name));
+  (wooVariations || []).forEach(v => push(v?.image?.src, woo?.name));
+  if (!wanted.length) return { images: null, reused: 0, added: 0, removed: 0, unmatched: [], retired: [] };
+
+  const available = new Map();
+  (existingImages || []).forEach(img => { const k = imageKey(img.src); if (k && !available.has(k)) available.set(k, img); });
+  const fileName = (src) => String(src || '').split('?')[0].split('/').pop();
+  let reused = 0, added = 0;
+  const unmatched = [];
+  const images = wanted.map(w => {
+    const ex = takeImageByKey(available, w.key);
+    if (ex) { reused++; return { id: ex.id }; }
+    added++;
+    unmatched.push(fileName(w.src));
+    return { src: w.src, alt: w.alt };
+  });
+  const keptIds = new Set(images.filter(i => i.id).map(i => i.id));
+  const retired = (existingImages || []).filter(img => !keptIds.has(img.id)).map(img => fileName(img.src));
+  return { images, reused, added, removed: retired.length, unmatched, retired };
+}
+
+// Variantes que aún no tienen imagen: si el archivo ya está entre las imágenes del producto se
+// enlaza (acumulando los ids de variante que ya tuviera); si no, hay que subirlo.
+function planVariantImageLinks(touched, productImages) {
+  const byKey = new Map();
+  (productImages || []).forEach(img => { const k = imageKey(img.src); if (k && !byKey.has(k)) byKey.set(k, { id: img.id, variantIds: [...(img.variant_ids || [])] }); });
+  const currentIds = new Set((productImages || []).map(img => img.id));
+  const link = [], upload = [];
+  (touched || []).forEach(t => {
+    // hasImage con un imageId que ya no existe en el producto (retirado en el PUT) cuenta como sin imagen.
+    const hasImage = t.hasImage && !(t.imageId && !currentIds.has(t.imageId));
+    if (!t.imageSrc || hasImage) return;
+    const key = imageKey(t.imageSrc);
+    const exact = byKey.get(key);
+    const img = exact || (key.length >= IMAGE_KEY_SUFFIX_MIN ? [...byKey.entries()].find(([k]) => k.length >= IMAGE_KEY_SUFFIX_MIN && (k.endsWith(key) || key.endsWith(k)))?.[1] : null);
+    if (!img) { upload.push(t); return; }
+    if (!img.variantIds.includes(t.id)) img.variantIds.push(t.id);
+    link.push({ imageId: img.id, variantId: t.id, variantIds: [...img.variantIds] });
+  });
+  return { link, upload };
+}
+// IMAGES-PURE-END
+
+// Productos de Shopify sin equivalente PUBLICADO en WooCommerce. WooCommerce es el dato maestro:
+// lo que no esté publicado allí (borrador, privado, pendiente) no debe existir en Shopify.
+async function collectShopifyOrphans(cfg, signal) {
+  log('Descargando catálogo de WooCommerce (solo publicados)...', 'info');
+  const wooAll = (await getAllWooProducts(cfg, signal, 'publish')).filter(isSyncableWooProduct);
+  if (!wooAll.length) { log('WooCommerce devolvió 0 productos publicados y visibles: no se elimina nada por seguridad.', 'warn'); return []; }
+  log('Descargando catálogo de Shopify...', 'info');
+  const shopifyAll = await getAllShopifyProducts(cfg, signal);
+  return findShopifyOrphans(wooAll, shopifyAll);
+}
+
+async function deleteShopifyProducts(cfg, products, signal) {
+  let deleted = 0;
+  for (const o of products) {
+    if (signal.aborted) { log('Eliminación cancelada por el usuario.', 'warn'); break; }
+    try {
+      await shopifyRequest(cfg, 'DELETE', `products/${o.id}.json`, null, signal);
+      deleted++;
+      log(`🗑 Eliminado en Shopify: ${o.name}`, 'warn');
+    } catch (e) {
+      log(`✗ No se pudo eliminar "${o.name}": ${e.message}`, 'err');
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
+  log(`=== Eliminados en Shopify: ${deleted} de ${products.length} ===`, 'ok');
+  return deleted;
+}
+
+// Paso automático al final de la migración completa (casilla "Eliminar en Shopify...").
+async function pruneShopifyOrphans(cfg, signal) {
+  log('=== Eliminando en Shopify productos que no existen en WooCommerce ===', 'info');
+  const orphans = await collectShopifyOrphans(cfg, signal);
+  if (!orphans.length) { log('No hay productos en Shopify sin equivalente en WooCommerce.', 'ok'); return; }
+  log(`${orphans.length} productos en Shopify sin equivalente en WooCommerce.`, 'warn');
+  await deleteShopifyProducts(cfg, orphans, signal);
+}
+
+// Botón del panel de comparación: mismo criterio, con confirmación previa.
+async function deleteShopifyOnly() {
+  if (running) { log('Ya hay una operación en curso.', 'warn'); return; }
+  const cfg = getConfig();
+  if (!validate(cfg)) return;
+
+  running = true;
+  abortController = new AbortController();
+  setStatus('running', 'ELIMINANDO');
+  document.getElementById('startBtn').disabled = true;
+  log('=== Buscando productos que solo existen en Shopify ===', 'info');
+
+  try {
+    const signal = abortController.signal;
+    const orphans = await collectShopifyOrphans(cfg, signal);
+    if (!orphans.length) {
+      log('No hay productos en Shopify sin equivalente en WooCommerce.', 'ok');
+      setStatus('success', 'SIN CAMBIOS');
+      return;
+    }
+    const MAX_PREVIEW = 15;
+    const preview = orphans.slice(0, MAX_PREVIEW).map(o => `• ${o.name}`).join('\n')
+      + (orphans.length > MAX_PREVIEW ? `\n… y ${orphans.length - MAX_PREVIEW} más` : '');
+    const ok = confirm(`Se eliminarán ${orphans.length} productos de Shopify. Esta acción no se puede deshacer.\n\n${preview}\n\n¿Continuar?`);
+    if (!ok) {
+      log('Eliminación cancelada antes de empezar.', 'warn');
+      setStatus('idle', 'INACTIVO');
+      return;
+    }
+    const deleted = await deleteShopifyProducts(cfg, orphans, signal);
+    const ids = new Set(orphans.map(o => o.id));
+    cmpRows = cmpRows.filter(r => !(r.status === 'shopify_only' && ids.has(r.shopify?.id)));
+    renderComparison();
+    setStatus(deleted === orphans.length ? 'success' : 'error', deleted === orphans.length ? 'COMPLETADO' : 'CON ERRORES');
+  } catch (e) {
+    log(`✗ Error al eliminar: ${e.message}`, 'err');
+    setStatus('error', 'ERROR');
+  } finally {
+    running = false;
+    document.getElementById('startBtn').disabled = false;
+  }
+}
+
+let cmpRows = [];
+let cmpFilter = null;
+
+async function runComparison() {
+  if (running) { log('Ya hay una operación en curso.', 'warn'); return; }
+  const cfg = getConfig();
+  if (!validate(cfg)) return;
+
+  running = true;
+  abortController = new AbortController();
+  setStatus('running', 'COMPARANDO');
+  document.getElementById('startBtn').disabled = true;
+  log('=== Inicio comparación de inventario ===', 'info');
+
+  try {
+    const signal = abortController.signal;
+    log('Descargando catálogo de WooCommerce...', 'info');
+    const wooProducts = await getAllWooProducts(cfg, signal);
+    log(`WooCommerce: ${wooProducts.length} productos`, 'ok');
+    log('Descargando catálogo de Shopify...', 'info');
+    const shopifyProducts = await getAllShopifyProducts(cfg, signal);
+    log(`Shopify: ${shopifyProducts.length} productos`, 'ok');
+
+    cmpRows = compareCatalogs(wooProducts, shopifyProducts);
+    cmpFilter = null;
+    const count = (st) => cmpRows.filter(r => r.status === st).length;
+    const fmt = (v) => (v === null || v === undefined ? '—' : String(v));
+    cmpRows.filter(r => r.status === 'diff').forEach(r => {
+      const parts = [];
+      if (r.priceDiff) parts.push(`precio ${fmt(r.woo.price)} → ${fmt(r.shopify.price)}`);
+      if (r.stockDiff) parts.push(`stock ${fmt(r.woo.stock)} → ${fmt(r.shopify.stock)}`);
+      log(`≠ ${r.name}: ${parts.join(' · ')} (Woo → Shopify)`, 'warn');
+    });
+    const hiddenOnly = cmpRows.filter(r => r.status === 'woo_only' && r.hidden).length;
+    if (hiddenOnly) log(`${hiddenOnly} de los "solo WooCommerce" están ocultos o sin publicar en Woo y no se sincronizan por decisión de negocio`, 'info');
+    const variables = wooProducts.filter(w => w.type === 'variable').length;
+    if (variables) log(`${variables} productos variables: solo se compara el precio (el stock por talla no se descarga en la comparación)`, 'info');
+    log(`=== Comparación: ${count('synced')} sincronizados · ${count('diff')} diferentes · ${count('woo_only')} solo WooCommerce · ${count('shopify_only')} solo Shopify ===`, 'ok');
+    document.getElementById('cmpPanel').style.display = '';
+    renderComparison();
+    document.getElementById('cmpPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setStatus('success', 'COMPARADO');
+  } catch (e) {
+    log(`✗ Error en la comparación: ${e.message}`, 'err');
+    setStatus('error', 'ERROR');
+  } finally {
+    running = false;
+    document.getElementById('startBtn').disabled = false;
+  }
+}
+
+function setCmpFilter(status) {
+  cmpFilter = cmpFilter === status ? null : status;
+  renderComparison();
+}
+
+const fmtPrice = (n) => n === null ? '—' : n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
+const fmtStock = (n) => n === null ? '—' : String(n);
+const CMP_STATUS_LABELS = { synced: 'Sincronizado', diff: 'Diferente', woo_only: 'Solo WooCommerce', shopify_only: 'Solo Shopify' };
+
+function cell(text, className) {
+  const td = document.createElement('td');
+  if (className) td.className = className;
+  td.textContent = text;
+  return td;
+}
+
+function sideCell(side, priceHl, stockHl) {
+  const td = document.createElement('td');
+  if (!side) { td.className = 'cmp-missing'; td.textContent = 'No existe'; return td; }
+  const price = document.createElement('div');
+  price.textContent = fmtPrice(side.price);
+  if (priceHl) price.className = 'cmp-hl';
+  const stock = document.createElement('div');
+  stock.textContent = `stock ${fmtStock(side.stock)}`;
+  stock.className = stockHl ? 'cmp-hl' : 'cmp-sku';
+  td.append(price, stock);
+  return td;
+}
+
+function renderComparison() {
+  const counts = { synced: 0, diff: 0, woo_only: 0, shopify_only: 0 };
+  cmpRows.forEach(r => counts[r.status]++);
+  document.getElementById('cmpCountSynced').textContent = counts.synced;
+  document.getElementById('cmpCountDiff').textContent = counts.diff;
+  document.getElementById('cmpCountWooOnly').textContent = counts.woo_only;
+  document.getElementById('cmpCountShopifyOnly').textContent = counts.shopify_only;
+  document.querySelectorAll('#cmpFilters .cmp-filter').forEach(b => b.classList.toggle('active', b.dataset.status === cmpFilter));
+  const delBtn = document.getElementById('cmpDeleteBtn');
+  delBtn.disabled = counts.shopify_only === 0;
+  delBtn.textContent = counts.shopify_only ? `🗑 Eliminar los ${counts.shopify_only} que solo están en Shopify` : '🗑 Nada que eliminar en Shopify';
+
+  const q = document.getElementById('cmpSearch').value.trim().toLowerCase();
+  const visible = cmpRows.filter(r => (!cmpFilter || r.status === cmpFilter) && (!q || r.name.toLowerCase().includes(q) || r.sku.toLowerCase().includes(q)));
+
+  const body = document.getElementById('cmpBody');
+  body.replaceChildren();
+  visible.forEach(r => {
+    const tr = document.createElement('tr');
+    const nameTd = cell(r.name, 'cmp-name');
+    if (r.sku) { const sku = document.createElement('div'); sku.className = 'cmp-sku'; sku.textContent = r.sku; nameTd.appendChild(sku); }
+    tr.appendChild(nameTd);
+    tr.appendChild(sideCell(r.woo, r.priceDiff, r.stockDiff));
+    tr.appendChild(sideCell(r.shopify, r.priceDiff, r.stockDiff));
+    const badge = document.createElement('span');
+    badge.className = `cmp-badge ${r.status}`;
+    badge.textContent = r.hidden ? `${CMP_STATUS_LABELS[r.status]} (oculto, no se sincroniza)` : CMP_STATUS_LABELS[r.status];
+    const stTd = document.createElement('td'); stTd.appendChild(badge); tr.appendChild(stTd);
+    body.appendChild(tr);
+  });
+  document.getElementById('cmpEmpty').style.display = visible.length ? 'none' : '';
+}
+
+// ─── Tests de conexión ────────────────────────────────────────────────────────
+async function testWoo() {
+  const cfg = getConfig();
+  log('Probando conexión con WooCommerce...', 'info');
+  log(`[v2 auth por URL] clave ${cfg.wooKey.slice(0, 8)}… (${cfg.wooKey.length} car.) · secreto ${cfg.wooSecret.slice(0, 3)}… (${cfg.wooSecret.length} car.)`, 'info');
+  try {
+    const { data } = await wooRequest(cfg, 'products', { per_page: 1 });
+    log(`✓ WooCommerce conectado. Primer producto: "${data[0]?.name || 'N/A'}"`, 'ok');
+  } catch (e) {
+    log(`✗ Error WooCommerce: ${e.message}`, 'err');
+  }
+}
+
+async function testShopify() {
+  const cfg = getConfig();
+  log('Probando conexión con Shopify...', 'info');
+  try {
+    const data = await shopifyRequest(cfg, 'GET', 'shop.json');
+    log(`✓ Shopify conectado. Tienda: "${data.shop?.name}"`, 'ok');
+  } catch (e) {
+    log(`✗ Error Shopify: ${e.message}`, 'err');
+  }
+}
+
+// ─── Migración principal ──────────────────────────────────────────────────────
+const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)' };
+
+async function startMigration(mode = 'full') {
+  const stockOnly = mode === 'stock';
+  const newOnly = mode === 'new';
+  const categoriesOnly = mode === 'categories';
+  shopifyLocationId = null;
+  if (running) { log('Ya hay una sincronización en curso.', 'warn'); return; }
+  const cfg = getConfig();
+  if (!validate(cfg)) return;
+
+  running = true;
+  abortController = new AbortController();
+  setStatus('running', 'SINCRONIZANDO');
+  document.getElementById('startBtn').disabled = true;
+  resetStats();
+
+  log(`=== Inicio ${MIGRATION_LABELS[mode] || mode} ===`, 'info');
+
+  try {
+    const signal = abortController.signal;
+
+    // 1. Obtener productos de WooCommerce
+    log('Descargando catálogo de WooCommerce...', 'info');
+    const wooAll = await getAllWooProducts(cfg, signal);
+    // Borradores y productos ocultos de catálogo o búsqueda no se sincronizan (decisión de negocio).
+    const wooProducts = wooAll.filter(isSyncableWooProduct);
+    const hidden = wooAll.length - wooProducts.length;
+    if (hidden) log(`Omitidos ${hidden} productos ocultos o no publicados en WooCommerce`, 'warn');
+    stats.total = wooProducts.length;
+    updateStats();
+    log(`Total productos WooCommerce a sincronizar: ${wooProducts.length}`, 'ok');
+
+    // Modo solo categorías: no toca productos, solo el árbol y su asignación
+    if (categoriesOnly) {
+      await syncCategoryTree(cfg, signal, wooProducts);
+      if (cfg.syncMetafields) await syncProductMetafields(cfg, wooProducts, signal);
+      log('=== Sincronización de categorías completada ===', 'ok');
+      setStatus('success', 'COMPLETADO');
+      return;
+    }
+
+    // Aviso previo: títulos repetidos (sin SKU solo los distingue woo_id).
+    findWooTitleCollisions(wooProducts).forEach(c => {
+      log(`⚠ Título repetido en WooCommerce: "${c.title}" (ids Woo ${c.ids.join(', ')}). Cada uno se empareja por woo_id; el que no tenga pareja se crea como producto nuevo.`, 'warn');
+    });
+
+    // 2. Obtener productos existentes en Shopify y emparejarlos uno a uno (woo_id, SKU, título)
+    log('Obteniendo inventario actual de Shopify...', 'info');
+    // Sin catálogo previo no se sigue: todo se crearía por duplicado.
+    let shopifyCatalog;
+    try {
+      shopifyCatalog = await getAllShopifyProducts(cfg, signal, 'id,title,variants,options,images');
+    } catch (e) { throw new Error(`No se pudo obtener el catálogo de Shopify, se detiene para no duplicar productos: ${e.message}`); }
+    const resolver = shopifyResolver(wooProducts, shopifyCatalog);
+    const wooIdLinks = []; // productos a los que hay que escribir custom.woo_id al final
+
+    // 3. Procesar cada producto
+    let networkFailures = 0;
+    for (let i = 0; i < wooProducts.length; i++) {
+      if (abortController.signal.aborted) { log('Sincronización cancelada por el usuario.', 'warn'); break; }
+
+      const woo = wooProducts[i];
+      updateProgress(i + 1, wooProducts.length, `Procesando: ${woo.name}`);
+
+      try {
+        // Identificar si existe en Shopify (pareja uno a uno calculada antes del bucle)
+        const existing = resolver.productOf(woo);
+        const existingId = existing?.id || null;
+        if (existing && toNumberOrNull(existing.wooId) !== woo.id) wooIdLinks.push({ shopifyId: existingId, wooId: woo.id });
+
+        if (existingId) {
+          if (newOnly || cfg.conflictMode === 'skip') {
+            log(`↷ Omitido (ya existe): ${woo.name}`, 'warn');
+            stats.skip++;
+            updateStats();
+            continue;
+          }
+
+          if ((stockOnly || cfg.conflictMode === 'update') && woo.type === 'variable' && cfg.fields.variants) {
+            // Producto variable: datos del producto sin variantes, y después variante a variante.
+            const variations = await getWooVariations(cfg, woo.id, signal);
+            let productImages = existing.images || null;
+            if (!stockOnly) {
+              const body = buildShopifyProduct(woo, cfg);
+              delete body.product.variants;
+              delete body.product.options;
+              productImages = await putProductWithImages(cfg, existingId, body, woo, variations, existing.images, signal);
+            }
+            const r = await syncProductVariants(cfg, existingId, woo, variations, signal, { stockOnly, product: existing, productImages });
+            if (stockOnly && variantsUntouched(r)) {
+              log(`= Sin cambios: ${woo.name}`, 'info');
+              stats.skip++;
+              updateStats();
+              continue;
+            }
+            log(`↻ Actualizado: ${woo.name} (${variantSummary(r)})`, 'ok');
+          } else if (stockOnly || cfg.conflictMode === 'update') {
+            // Precio y stock: se compara con el catálogo ya descargado y solo se envía lo que difiere.
+            let first = existing.variants?.[0];
+            if (!first) {
+              const variants = await shopifyRequest(cfg, 'GET', `products/${existingId}/variants.json`, null, signal);
+              first = variants.variants?.[0];
+            }
+            const plan = stockUpdatePlan(woo, first);
+            const pf = priceFields(woo);
+            const compareAtDiff = !!first && ((toNumberOrNull(first.compare_at_price) === null ? null : money(toNumberOrNull(first.compare_at_price))) !== pf.compare_at_price);
+            const wantStock = cfg.fields.stock && plan.stockDiff;
+            const wantPrice = cfg.fields.price !== false && (plan.priceDiff || compareAtDiff);
+
+            if (stockOnly && !wantPrice && !wantStock) {
+              log(`= Sin cambios: ${woo.name}`, 'info');
+              stats.skip++;
+              updateStats();
+              continue;
+            }
+
+            // SKU: solo en migración completa, y solo si cambia.
+            const wantSku = !stockOnly && cfg.fields.sku && !!first && (first.sku || '') !== (woo.sku || '');
+            if (first && (wantPrice || wantSku)) {
+              const variantPatch = {};
+              if (wantPrice) { variantPatch.price = pf.price; variantPatch.compare_at_price = pf.compare_at_price; }
+              if (wantSku) variantPatch.sku = woo.sku || '';
+              await shopifyRequest(cfg, 'PUT', `variants/${first.id}.json`, { variant: variantPatch }, signal);
+            }
+            if (first && wantStock) {
+              await setVariantStock(cfg, first, woo.stock_quantity, signal);
+            }
+            if (!stockOnly) {
+              // Al actualizar, Shopify exige que cada variante lleve su id; si no, intenta
+              // sustituir el conjunto y falla ("could not update variants to []").
+              // Las variantes ya se gestionan aparte, así que el producto va sin ellas.
+              const body = buildShopifyProduct(woo, cfg);
+              delete body.product.variants;
+              await putProductWithImages(cfg, existingId, body, woo, null, existing.images, signal);
+            }
+            const changed = [wantPrice && 'precio', wantStock && 'stock'].filter(Boolean).join(' y ');
+            log(`↻ Actualizado${changed ? ` (${changed})` : ''}: ${woo.name}`, 'ok');
+          } else {
+            // Duplicar
+            const variations = woo.type === 'variable' ? await getWooVariations(cfg, woo.id, signal) : null;
+            const body = buildShopifyProduct(woo, cfg, variations);
+            body.product.title = `${woo.name} (copia)`;
+            // La copia NO lleva woo_id: ese id ya identifica al original emparejado; dos productos
+            // con el mismo woo_id romperían el emparejamiento uno a uno.
+            const created = await shopifyRequest(cfg, 'POST', 'products.json', body, signal);
+            if (woo.type === 'variable' && cfg.fields.variants) {
+              const r = await syncProductVariants(cfg, created.product.id, woo, variations, signal, { product: created.product });
+              log(`+ Duplicado creado: ${woo.name} (${variantSummary(r)})`, 'ok');
+            } else {
+              if (cfg.fields.stock && woo.type !== 'variable') await setVariantStock(cfg, created.product?.variants?.[0], woo.stock_quantity, signal);
+              log(`+ Duplicado creado: ${woo.name}`, 'ok');
+            }
+          }
+        } else if (!stockOnly) {
+          // Crear nuevo
+          const variations = woo.type === 'variable' ? await getWooVariations(cfg, woo.id, signal) : null;
+          const body = buildShopifyProduct(woo, cfg, variations);
+          const created = await shopifyRequest(cfg, 'POST', 'products.json', body, signal);
+          const newId = created.product?.id;
+          if (newId) wooIdLinks.push({ shopifyId: newId, wooId: woo.id });
+          if (woo.type === 'variable' && newId && cfg.fields.variants) {
+            // Las variantes ya van en el POST; aquí se fija su stock y se enlazan o suben las imágenes de variación.
+            const r = await syncProductVariants(cfg, newId, woo, variations, signal, { product: created.product });
+            log(`+ Creado: ${woo.name} (${variantSummary(r)})`, 'ok');
+          } else {
+            if (cfg.fields.stock && woo.type !== 'variable') await setVariantStock(cfg, created.product?.variants?.[0], woo.stock_quantity, signal);
+            log(`+ Creado: ${woo.name}`, 'ok');
+          }
+        } else {
+          log(`↷ No existe en Shopify, omitido (modo stock): ${woo.name}`, 'warn');
+          stats.skip++;
+          updateStats();
+          continue;
+        }
+
+        stats.ok++;
+        updateStats();
+        networkFailures = 0;
+
+        // Pausa para no exceder rate limits de Shopify (40 req/s)
+        await new Promise(r => setTimeout(r, 300));
+
+      } catch (e) {
+        log(`✗ Error en "${woo.name}": ${e.message}`, 'err');
+        stats.err++;
+        updateStats();
+        networkFailures = nextNetworkFailureCount(networkFailures, e);
+        if (networkFailures >= MAX_CONSECUTIVE_NETWORK_ERRORS) {
+          throw new Error(`${MAX_CONSECUTIVE_NETWORK_ERRORS} fallos de red seguidos; se detiene la migración. ${PROXY_DOWN_MSG}`);
+        }
+      }
+    }
+
+    log(`=== Productos: ${stats.ok} OK · ${stats.skip} omitidos · ${stats.err} errores ===`, 'ok');
+
+    // Clave de emparejamiento: custom.woo_id en todo producto creado o emparejado que no lo tuviera.
+    if (wooIdLinks.length) {
+      const written = await writeWooIdLinks(cfg, wooIdLinks, signal);
+      log(`=== woo_id: ${written} de ${wooIdLinks.length} productos etiquetados con su id de WooCommerce ===`, written === wooIdLinks.length ? 'ok' : 'warn');
+    }
+
+    // Sincronizar árbol de categorías como metaobjetos
+    if (cfg.syncCategoryTree && mode === 'full' && !abortController.signal.aborted) {
+      await syncCategoryTree(cfg, signal, wooProducts);
+    }
+
+    // Metacampos de producto
+    if (cfg.syncMetafields && mode === 'full' && !abortController.signal.aborted) {
+      await syncProductMetafields(cfg, wooProducts, signal);
+    }
+
+    // Sincronizar pedidos
+    if (cfg.syncOrders && mode === 'full' && !abortController.signal.aborted) {
+      await syncOrders(cfg, signal);
+    }
+
+    // Eliminar en Shopify lo que no exista en WooCommerce (opcional, solo migración completa)
+    if (cfg.pruneOrphans && mode === 'full' && !abortController.signal.aborted) {
+      await pruneShopifyOrphans(cfg, signal);
+    }
+
+    log('=== Migración completada ===', 'ok');
+    setStatus('success', 'COMPLETADO');
+
+  } catch (e) {
+    log(`Error crítico: ${e.message}`, 'err');
+    setStatus('error', 'ERROR');
+  } finally {
+    running = false;
+    document.getElementById('startBtn').disabled = false;
+    updateProgress(stats.ok + stats.skip + stats.err, stats.total, 'Completado');
+  }
+}
+
+// ─── Auto-sync ────────────────────────────────────────────────────────────────
+function toggleAutoSync() {
+  const enabled = document.getElementById('autoSync').checked;
+  document.getElementById('syncInterval').disabled = !enabled;
+  document.getElementById('nextSyncInfo').style.display = enabled ? 'flex' : 'none';
+  document.getElementById('stopBtn').style.display = enabled ? 'inline-flex' : 'none';
+
+  if (enabled) {
+    scheduleNext();
+  } else {
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = null;
+    log('Sincronización automática desactivada.', 'warn');
+  }
+}
+
+function scheduleNext() {
+  if (syncTimer) clearTimeout(syncTimer);
+  const interval = parseInt(document.getElementById('syncInterval').value);
+  const nextTime = new Date(Date.now() + interval);
+  document.getElementById('nextSyncTime').textContent = nextTime.toLocaleTimeString('es-ES');
+
+  syncTimer = setTimeout(async () => {
+    log('--- Sincronización automática iniciada ---', 'info');
+    await startMigration('full');
+    scheduleNext(); // programar la siguiente
+  }, interval);
+}
+
+function stopSync() {
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = null;
+  document.getElementById('autoSync').checked = false;
+  toggleAutoSync();
+  if (running && abortController) abortController.abort();
+}
+
+// ─── Export log ───────────────────────────────────────────────────────────────
+function exportLog() {
+  const blob = new Blob([logLines.join('\n')], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `woo-shopify-sync-${new Date().toISOString().slice(0,10)}.log`;
+  a.click();
+}
+</script>
+</body>
+</html>

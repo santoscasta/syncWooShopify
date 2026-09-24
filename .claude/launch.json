@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "woo-shopify-sync",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "--env-file=.env",
+        "server.js"
+      ],
+      "port": 4000
+    }
+  ]
+}

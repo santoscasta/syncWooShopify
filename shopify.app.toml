@@ -1,0 +1,14 @@
+client_id = "e298e9e8dbf7dfb3938e6b076a6b2f1e"
+name = "SyncShopy"
+application_url = "http://localhost:4000/woo-shopify-sync.html"
+embedded = false
+
+[auth]
+redirect_urls = ["http://localhost:4000/auth/shopify/callback"]
+use_legacy_install_flow = true
+
+[access_scopes]
+scopes = "read_products,write_products,read_inventory,write_inventory,read_orders,write_orders,read_metaobjects,write_metaobjects,read_metaobject_definitions,write_metaobject_definitions"
+
+[webhooks]
+api_version = "2025-01"
