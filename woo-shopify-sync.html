@@ -563,6 +563,7 @@
     </div>
 
     <div class="actions">
+      <button class="btn btn-primary" id="resumeBtn" onclick="resumeMigration()" style="display:none">⏵ Continuar</button>
       <button class="btn btn-primary" id="startBtn" onclick="startMigration('full')">▶ Iniciar migración completa</button>
       <button class="btn btn-secondary" onclick="startMigration('stock')">↻ Solo actualizar stock/precios</button>
       <button class="btn btn-secondary" onclick="startMigration('new')">＋ Solo productos nuevos</button>
@@ -2237,7 +2238,57 @@ async function testShopify() {
 // ─── Migración principal ──────────────────────────────────────────────────────
 const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)' };
 
-async function startMigration(mode = 'full') {
+// ─── Punto de reanudación ────────────────────────────────────────────────────
+// RESUME-PURE-BEGIN
+const RESUMABLE_MODES = ['full', 'stock', 'new'];
+
+// Un punto guardado solo sirve para la misma tienda Shopify y un modo con bucle de productos.
+function isUsableCheckpoint(cp, shopifyUrl) {
+  return !!cp && RESUMABLE_MODES.includes(cp.mode) && Number.isInteger(cp.index) && cp.shopifyUrl === shopifyUrl;
+}
+
+// Índice por el que seguir: se busca el producto guardado por woo_id (el catálogo puede haber
+// cambiado de orden); si ya no existe, se usa la posición guardada acotada al catálogo.
+function resumeStartIndex(wooProducts, cp) {
+  if (!cp) return 0;
+  const byId = wooProducts.findIndex(p => p.id === cp.wooId);
+  if (byId !== -1) return byId;
+  return Math.min(Math.max(cp.index || 0, 0), wooProducts.length);
+}
+// RESUME-PURE-END
+
+const RESUME_KEY = 'woo-shopify-resume';
+
+function loadCheckpoint() {
+  try { return JSON.parse(localStorage.getItem(RESUME_KEY) || 'null'); } catch { return null; }
+}
+function saveCheckpoint(cp) {
+  localStorage.setItem(RESUME_KEY, JSON.stringify(cp));
+  renderResumeButton();
+}
+function clearCheckpoint() {
+  localStorage.removeItem(RESUME_KEY);
+  renderResumeButton();
+}
+function renderResumeButton() {
+  const btn = document.getElementById('resumeBtn');
+  if (!btn) return;
+  const cp = loadCheckpoint();
+  const shopifyUrl = document.getElementById('shopifyUrl').value.replace(/\/$/, '');
+  if (!isUsableCheckpoint(cp, shopifyUrl)) { btn.style.display = 'none'; return; }
+  btn.style.display = 'inline-flex';
+  btn.textContent = `⏵ Continuar ${MIGRATION_LABELS[cp.mode]} (${cp.index + 1}/${cp.total}: ${cp.name})`;
+  btn.title = `Interrumpida el ${new Date(cp.at).toLocaleString('es-ES')}. Sigue desde "${cp.name}".`;
+}
+function resumeMigration() {
+  const cp = loadCheckpoint();
+  if (!isUsableCheckpoint(cp, getConfig().shopifyUrl)) { renderResumeButton(); return; }
+  startMigration(cp.mode, cp);
+}
+window.addEventListener('load', renderResumeButton);
+document.addEventListener('input', e => { if (e.target.id === 'shopifyUrl') renderResumeButton(); });
+
+async function startMigration(mode = 'full', resumeFrom = null) {
   const stockOnly = mode === 'stock';
   const newOnly = mode === 'new';
   const categoriesOnly = mode === 'categories';
@@ -2292,13 +2343,32 @@ async function startMigration(mode = 'full') {
     const resolver = shopifyResolver(wooProducts, shopifyCatalog);
     const wooIdLinks = []; // productos a los que hay que escribir custom.woo_id al final
 
-    // 3. Procesar cada producto
+    // 3. Procesar cada producto (o seguir por donde se quedó la anterior)
+    const startIndex = resumeStartIndex(wooProducts, resumeFrom);
+    if (resumeFrom) {
+      // Los ya procesados no se repiten, pero se recogen sus woo_id pendientes: la ejecución
+      // interrumpida no llegó a escribirlos.
+      for (const woo of wooProducts.slice(0, startIndex)) {
+        const existing = resolver.productOf(woo);
+        if (existing && toNumberOrNull(existing.wooId) !== woo.id) wooIdLinks.push({ shopifyId: existing.id, wooId: woo.id });
+      }
+      stats.skip += startIndex;
+      updateStats();
+      log(`⏵ Continuando desde el producto ${startIndex + 1} de ${wooProducts.length}${wooProducts[startIndex] ? `: ${wooProducts[startIndex].name}` : ''}`, 'info');
+    }
+    const checkpointAt = (index) => {
+      const next = wooProducts[index];
+      if (!next) return;
+      saveCheckpoint({ mode, index, wooId: next.id, name: next.name, total: wooProducts.length, shopifyUrl: cfg.shopifyUrl, at: Date.now() });
+    };
     let networkFailures = 0;
-    for (let i = 0; i < wooProducts.length; i++) {
+    for (let i = startIndex; i < wooProducts.length; i++) {
       if (abortController.signal.aborted) { log('Sincronización cancelada por el usuario.', 'warn'); break; }
 
       const woo = wooProducts[i];
       updateProgress(i + 1, wooProducts.length, `Procesando: ${woo.name}`);
+      // Mientras no haya un fallo de red, el punto de reanudación es el producto en curso.
+      if (networkFailures === 0) checkpointAt(i);
 
       try {
         // Identificar si existe en Shopify (pareja uno a uno calculada antes del bucle)
@@ -2428,6 +2498,9 @@ async function startMigration(mode = 'full') {
         }
       }
     }
+
+    // Bucle terminado entero: ya no hay nada que continuar.
+    if (!abortController.signal.aborted) clearCheckpoint();
 
     log(`=== Productos: ${stats.ok} OK · ${stats.skip} omitidos · ${stats.err} errores ===`, 'ok');
 
