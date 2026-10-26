@@ -739,8 +739,13 @@ const PROXY = '/proxy';
 const PROXY_DOWN_MSG = 'No se pudo conectar con el servidor local (proxy). Comprueba que "npm start" sigue en marcha en http://localhost:4000';
 const MAX_CONSECUTIVE_NETWORK_ERRORS = 3;
 
+// Peticiones salientes hechas hasta ahora; el bucle de migración lo usa para pausar
+// solo tras los productos que realmente han llamado a alguna API.
+let proxiedRequestCount = 0;
+
 async function proxiedFetch(targetUrl, opts = {}, signal) {
   const proxyUrl = `${PROXY}?url=${encodeURIComponent(targetUrl)}`;
+  proxiedRequestCount++;
   try {
     return await fetch(proxyUrl, { ...opts, signal });
   } catch (e) {
@@ -753,6 +758,34 @@ async function proxiedFetch(targetUrl, opts = {}, signal) {
 }
 
 // ─── WooCommerce API ──────────────────────────────────────────────────────────
+// WOO-RETRY-PURE-BEGIN
+// El hosting de Woo corta conexiones (ECONNRESET → 502 del proxy) cuando recibe ráfagas;
+// esos fallos y la saturación se reintentan con espera creciente. El resto no: repetirlos no cambia nada.
+const WOO_MAX_RETRIES = 3;
+const WOO_RETRY_BASE_MS = 1000;
+const WOO_RETRY_MAX_MS = 30000;
+
+function isRetryableWooStatus(status) {
+  return [429, 502, 503, 504].includes(status);
+}
+
+function wooRetryDelayMs(attempt, retryAfter = null) {
+  const seconds = Number(retryAfter);
+  if (retryAfter !== null && retryAfter !== '' && Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(seconds * 1000, WOO_RETRY_MAX_MS);
+  }
+  return WOO_RETRY_BASE_MS * 2 ** attempt;
+}
+// WOO-RETRY-PURE-END
+
+function waitMs(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+  });
+}
+
 async function wooRequest(cfg, endpoint, params = {}, signal) {
   const url = new URL(`${cfg.wooUrl}/wp-json/wc/v3/${endpoint}`);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
@@ -760,11 +793,19 @@ async function wooRequest(cfg, endpoint, params = {}, signal) {
   // Muchos hostings con PHP en CGI/FastCGI descartan la cabecera Authorization.
   url.searchParams.set('consumer_key', cfg.wooKey);
   url.searchParams.set('consumer_secret', cfg.wooSecret);
-  const res = await proxiedFetch(url.toString(), {
-    headers: { 'Content-Type': 'application/json' }
-  }, signal);
-  if (!res.ok) throw new Error(`WooCommerce ${res.status}: ${await res.text()}`);
-  return { data: await res.json(), headers: res.headers };
+  for (let attempt = 0; ; attempt++) {
+    const res = await proxiedFetch(url.toString(), {
+      headers: { 'Content-Type': 'application/json' }
+    }, signal);
+    if (res.ok) return { data: await res.json(), headers: res.headers };
+    const text = await res.text();
+    if (!isRetryableWooStatus(res.status) || attempt >= WOO_MAX_RETRIES) {
+      throw new Error(`WooCommerce ${res.status}${attempt ? ` (tras ${attempt} reintentos)` : ''}: ${text}`);
+    }
+    const wait = wooRetryDelayMs(attempt, res.headers.get('Retry-After'));
+    log(`WooCommerce ${res.status} en ${endpoint}; reintento ${attempt + 1}/${WOO_MAX_RETRIES} en ${wait / 1000}s`, 'warn');
+    await waitMs(wait, signal);
+  }
 }
 
 async function getAllWooProducts(cfg, signal, status = 'publish') {
@@ -2236,6 +2277,7 @@ async function testShopify() {
 }
 
 // ─── Migración principal ──────────────────────────────────────────────────────
+const PRODUCT_PAUSE_MS = 300;
 const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)' };
 
 // ─── Punto de reanudación ────────────────────────────────────────────────────
@@ -2369,6 +2411,7 @@ async function startMigration(mode = 'full', resumeFrom = null) {
       updateProgress(i + 1, wooProducts.length, `Procesando: ${woo.name}`);
       // Mientras no haya un fallo de red, el punto de reanudación es el producto en curso.
       if (networkFailures === 0) checkpointAt(i);
+      const requestsBefore = proxiedRequestCount;
 
       try {
         // Identificar si existe en Shopify (pareja uno a uno calculada antes del bucle)
@@ -2485,9 +2528,6 @@ async function startMigration(mode = 'full', resumeFrom = null) {
         updateStats();
         networkFailures = 0;
 
-        // Pausa para no exceder rate limits de Shopify (40 req/s)
-        await new Promise(r => setTimeout(r, 300));
-
       } catch (e) {
         log(`✗ Error en "${woo.name}": ${e.message}`, 'err');
         stats.err++;
@@ -2496,6 +2536,10 @@ async function startMigration(mode = 'full', resumeFrom = null) {
         if (networkFailures >= MAX_CONSECUTIVE_NETWORK_ERRORS) {
           throw new Error(`${MAX_CONSECUTIVE_NETWORK_ERRORS} fallos de red seguidos; se detiene la migración. ${PROXY_DOWN_MSG}`);
         }
+      } finally {
+        // Pausa tras todo producto que haya llamado a alguna API, también los "sin cambios" y los
+        // fallidos: sin ella las variaciones de Woo se piden a ráfagas y el hosting corta la conexión.
+        if (proxiedRequestCount > requestsBefore) await new Promise(r => setTimeout(r, PRODUCT_PAUSE_MS));
       }
     }
 

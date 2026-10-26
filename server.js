@@ -1,5 +1,5 @@
 const express = require('express');
-const { request: httpsRequest } = require('https');
+const { request: httpsRequest, Agent: HttpsAgent } = require('https');
 const { URL } = require('url');
 const path = require('path');
 
@@ -90,6 +90,17 @@ app.get('/auth/shopify/token', (req, res) => {
 });
 
 // ─── Proxy genérico que reenvía requests evitando CORS ──────────────────────
+// Reutiliza conexiones TLS en vez de abrir una por petición: el hosting de Woo corta
+// (ECONNRESET) ráfagas de conexiones nuevas. Los sockets libres se cierran a los 3 s, antes
+// que el keep-alive típico del servidor (5 s en Apache), para no escribir en uno ya cerrado.
+const PROXY_SOCKET_IDLE_MS = 3000;
+const PROXY_MAX_SOCKETS_PER_HOST = 4;
+const proxyAgent = new HttpsAgent({
+  keepAlive: true,
+  maxSockets: PROXY_MAX_SOCKETS_PER_HOST,
+  timeout: PROXY_SOCKET_IDLE_MS,
+});
+
 app.all('/proxy', (req, res) => {
   const targetUrl = req.query.url || req.headers['x-target-url'];
   if (!targetUrl) return res.status(400).json({ error: 'Falta x-target-url o ?url=' });
@@ -110,6 +121,7 @@ app.all('/proxy', (req, res) => {
     path: parsed.pathname + parsed.search,
     method: req.method,
     headers: fwdHeaders,
+    agent: proxyAgent,
   };
 
   const proxyReq = httpsRequest(options, (proxyRes) => {
