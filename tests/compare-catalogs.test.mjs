@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 const html = readFileSync(new URL('../woo-shopify-sync.html', import.meta.url), 'utf8');
 const m = html.match(/\/\/ COMPARE-PURE-BEGIN([\s\S]*?)\/\/ COMPARE-PURE-END/);
 assert.ok(m, 'No se encontró el bloque COMPARE-PURE en el HTML');
-const { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions, wooUnpublishedLabel, wooProductsForPruning } = new Function(`${m[1]}; return { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions, wooUnpublishedLabel, wooProductsForPruning };`)();
+const { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions, wooUnpublishedLabel, wooProductsForPruning, shopifyStatusFor } = new Function(`${m[1]}; return { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions, wooUnpublishedLabel, wooProductsForPruning, shopifyStatusFor };`)();
 
 const woo = [
   { id: 1, name: 'Camiseta', sku: 'CAM-1', price: '19.90', stock_quantity: 5 },
@@ -158,12 +158,16 @@ const noPrice = pairCatalogs(
 );
 assert.equal(noPrice.pairs.get(1).id, 201);
 
-// "Solo WooCommerce" distingue lo que la sincronización nunca creará (oculto o borrador)
+// "Solo WooCommerce" distingue lo que la sincronización nunca creará (oculto); un borrador sí se crea
 const hiddenRows = compareCatalogs(
   [{ id: 1, name: 'Visible', status: 'publish', catalog_visibility: 'catalog', price: '1' }, { id: 2, name: 'Oculto', status: 'publish', catalog_visibility: 'hidden', price: '1' }, { id: 3, name: 'Borrador', status: 'draft', price: '1' }],
   []
 );
-assert.deepEqual(hiddenRows.map(r => [r.name, r.status, r.hidden]), [['Borrador', 'woo_only', true], ['Oculto', 'woo_only', true], ['Visible', 'woo_only', false]]);
+assert.deepEqual(hiddenRows.map(r => [r.name, r.status, r.hidden]), [['Borrador', 'woo_only', false], ['Oculto', 'woo_only', true], ['Visible', 'woo_only', false]]);
+
+// ── Estado en Shopify: publicado → activo; cualquier otro estado de Woo → borrador ──
+assert.equal(shopifyStatusFor({ status: 'publish' }), 'active');
+for (const status of ['draft', 'pending', 'private', 'future']) assert.equal(shopifyStatusFor({ status }), 'draft', `${status} → draft`);
 
 // ── Borradores y demás estados no publicados ──
 assert.equal(wooUnpublishedLabel({ status: 'publish' }), null);

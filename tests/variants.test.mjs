@@ -10,11 +10,16 @@ assert.ok(m, 'No se encontró el bloque VARIANTS-PURE en el HTML');
 const { isSyncableWooProduct, priceFields, productOptionNames, variationStock, planVariants } =
   new Function(`${cmp[1]}; ${m[1]}; return { isSyncableWooProduct, priceFields, productOptionNames, variationStock, planVariants };`)();
 
-// ── Filtro de productos sincronizables: publicados y visibles ──
+// ── Filtro de productos sincronizables: cualquier estado salvo papelera, y visibles ──
 assert.equal(isSyncableWooProduct({ status: 'publish', catalog_visibility: 'visible' }), true);
 assert.equal(isSyncableWooProduct({ status: 'publish' }), true, 'sin catalog_visibility se asume visible');
-assert.equal(isSyncableWooProduct({ status: 'draft', catalog_visibility: 'visible' }), false);
+for (const status of ['draft', 'pending', 'private', 'future']) {
+  assert.equal(isSyncableWooProduct({ status, catalog_visibility: 'visible' }), true, `${status} se sincroniza (como borrador en Shopify)`);
+}
+assert.equal(isSyncableWooProduct({ status: 'trash' }), false, 'la papelera no se sincroniza');
+assert.equal(isSyncableWooProduct({}), false, 'sin estado no se sincroniza');
 assert.equal(isSyncableWooProduct({ status: 'publish', catalog_visibility: 'hidden' }), false);
+assert.equal(isSyncableWooProduct({ status: 'draft', catalog_visibility: 'hidden' }), false, 'oculto sigue sin sincronizarse aunque sea borrador');
 assert.equal(isSyncableWooProduct({ status: 'publish', catalog_visibility: 'catalog' }), true, '"Solo tienda" es visible para el cliente: se sincroniza');
 assert.equal(isSyncableWooProduct({ status: 'publish', catalog_visibility: 'search' }), true, '"Solo buscador" también se sincroniza');
 assert.equal(isSyncableWooProduct(null), false);
