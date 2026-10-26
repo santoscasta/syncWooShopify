@@ -8,7 +8,9 @@
         "--env-file=.env",
         "server.js"
       ],
-      "port": 4000
+      "port": 4000,
+      "autoPort": false,
+      "url": "http://localhost:4000"
     }
   ]
 }
