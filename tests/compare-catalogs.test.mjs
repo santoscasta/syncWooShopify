@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 const html = readFileSync(new URL('../woo-shopify-sync.html', import.meta.url), 'utf8');
 const m = html.match(/\/\/ COMPARE-PURE-BEGIN([\s\S]*?)\/\/ COMPARE-PURE-END/);
 assert.ok(m, 'No se encontró el bloque COMPARE-PURE en el HTML');
-const { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions } = new Function(`${m[1]}; return { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions };`)();
+const { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions, wooUnpublishedLabel, wooProductsForPruning } = new Function(`${m[1]}; return { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions, wooUnpublishedLabel, wooProductsForPruning };`)();
 
 const woo = [
   { id: 1, name: 'Camiseta', sku: 'CAM-1', price: '19.90', stock_quantity: 5 },
@@ -164,5 +164,38 @@ const hiddenRows = compareCatalogs(
   []
 );
 assert.deepEqual(hiddenRows.map(r => [r.name, r.status, r.hidden]), [['Borrador', 'woo_only', true], ['Oculto', 'woo_only', true], ['Visible', 'woo_only', false]]);
+
+// ── Borradores y demás estados no publicados ──
+assert.equal(wooUnpublishedLabel({ status: 'publish' }), null);
+assert.equal(wooUnpublishedLabel({ status: 'draft' }), 'borrador');
+assert.equal(wooUnpublishedLabel({ status: 'pending' }), 'pendiente de revisión');
+assert.equal(wooUnpublishedLabel({ status: 'private' }), 'privado');
+assert.equal(wooUnpublishedLabel({ status: 'future' }), 'programado');
+assert.equal(wooUnpublishedLabel(null), null);
+
+// La comparación marca cada fila de Woo con su estado de publicación, también si está emparejada
+const draftRows = compareCatalogs(
+  [{ id: 1, name: 'Pelele', status: 'draft', price: '10' }, { id: 2, name: 'Gorro', status: 'publish', price: '5' }],
+  [{ id: 101, title: 'Pelele', variants: [{ price: '10', inventory_quantity: 0 }] }]
+);
+const pelele = draftRows.find(r => r.name === 'Pelele');
+assert.equal(pelele.status, 'synced', 'un borrador con copia en Shopify no es "solo Shopify"');
+assert.equal(pelele.unpublished, 'borrador');
+assert.equal(draftRows.find(r => r.name === 'Gorro').unpublished, null);
+assert.equal(draftRows.some(r => r.status === 'shopify_only'), false);
+
+// Limpieza: los no publicados protegen su copia en Shopify; los publicados ocultos no
+const wooAny = [
+  { id: 1, name: 'Visible', status: 'publish', price: '1' },
+  { id: 2, name: 'Borrador', status: 'draft', price: '1' },
+  { id: 3, name: 'Privado', status: 'private', price: '1' },
+  { id: 4, name: 'Oculto', status: 'publish', catalog_visibility: 'hidden', price: '1' },
+];
+assert.deepEqual(wooProductsForPruning(wooAny).map(w => w.id), [1, 2, 3]);
+const shopifyCopies = ['Visible', 'Borrador', 'Privado', 'Oculto', 'Huérfano'].map((t, i) => ({ id: 300 + i, title: t, variants: [{ price: '1' }] }));
+assert.deepEqual(
+  findShopifyOrphans(wooProductsForPruning(wooAny), shopifyCopies).map(o => o.name),
+  ['Oculto', 'Huérfano']
+);
 
 console.log('✓ compareCatalogs: todas las aserciones pasan');
