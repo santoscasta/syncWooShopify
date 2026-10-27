@@ -16,7 +16,7 @@ app.get('/auth/shopify', (req, res) => {
   if (!shop || !client_id) return res.status(400).send('Faltan shop o client_id');
 
   const redirectUri = `http://localhost:${PORT}/auth/shopify/callback`;
-  const scopes = 'read_products,write_products,read_inventory,write_inventory,read_metaobjects,write_metaobjects,read_metaobject_definitions,write_metaobject_definitions';
+  const scopes = 'read_products,write_products,read_inventory,write_inventory,read_metaobjects,write_metaobjects,read_metaobject_definitions,write_metaobject_definitions,read_publications,write_publications';
   const authUrl = `https://${shop}/admin/oauth/authorize?client_id=${client_id}&scope=${scopes}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
   res.redirect(authUrl);

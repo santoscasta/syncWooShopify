@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 const html = readFileSync(new URL('../woo-shopify-sync.html', import.meta.url), 'utf8');
 const m = html.match(/\/\/ COMPARE-PURE-BEGIN([\s\S]*?)\/\/ COMPARE-PURE-END/);
 assert.ok(m, 'No se encontró el bloque COMPARE-PURE en el HTML');
-const { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions, wooUnpublishedLabel, wooProductsForPruning, shopifyStatusFor } = new Function(`${m[1]}; return { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions, wooUnpublishedLabel, wooProductsForPruning, shopifyStatusFor };`)();
+const { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions, wooUnpublishedLabel, wooProductsForPruning, shopifyStatusFor, wooPosVisibility, wooVisibilityBreakdown, wooPosMetaKeys } = new Function(`${m[1]}; return { compareCatalogs, findShopifyOrphans, stockUpdatePlan, pairCatalogs, findWooTitleCollisions, wooUnpublishedLabel, wooProductsForPruning, shopifyStatusFor, wooPosVisibility, wooVisibilityBreakdown, wooPosMetaKeys };`)();
 
 const woo = [
   { id: 1, name: 'Camiseta', sku: 'CAM-1', price: '19.90', stock_quantity: 5 },
@@ -201,5 +201,25 @@ assert.deepEqual(
   findShopifyOrphans(wooProductsForPruning(wooAny), shopifyCopies).map(o => o.name),
   ['Oculto', 'Huérfano']
 );
+
+// ── Recuento de visibilidad: estado × catálogo × TPV (_pos_visibility del plugin Point of Sale) ──
+const pos = (v) => [{ key: '_pos_visibility', value: v }];
+const visProducts = [
+  { status: 'publish', catalog_visibility: 'visible', meta_data: pos('pos_online') },
+  { status: 'publish', catalog_visibility: 'visible', meta_data: pos('pos_online') },
+  { status: 'publish', catalog_visibility: 'hidden', meta_data: pos('pos') },
+  { status: 'draft', catalog_visibility: 'visible', meta_data: [{ key: '_pos_stock', value: '1' }] },
+  { status: 'publish' },
+];
+assert.equal(wooPosVisibility(visProducts[0]), 'pos_online');
+assert.equal(wooPosVisibility(visProducts[3]), null);
+assert.deepEqual(wooVisibilityBreakdown(visProducts), [
+  { status: 'publish', catalog: 'visible', pos: 'pos_online', count: 2 },
+  { status: 'draft', catalog: 'visible', pos: null, count: 1 },
+  { status: 'publish', catalog: 'hidden', pos: 'pos', count: 1 },
+  { status: 'publish', catalog: 'visible', pos: null, count: 1 },
+]);
+// Claves de metacampo con "pos": por si el plugin guarda la visibilidad con otro nombre
+assert.deepEqual(wooPosMetaKeys(visProducts), ['_pos_stock', '_pos_visibility']);
 
 console.log('✓ compareCatalogs: todas las aserciones pasan');

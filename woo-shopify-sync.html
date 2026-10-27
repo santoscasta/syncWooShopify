@@ -488,6 +488,7 @@
     <div class="check-grid">
       <label class="check-item" title="Crea el árbol de categorías como metaobjetos «Categoría» (cada una referencia a su padre) y asigna a cada producto sus categorías en el metacampo custom.categorias."><input type="checkbox" id="chk_cattree" checked> Categorías → Metaobjetos (árbol)</label>
       <label class="check-item" title="Escribe en cada producto los metacampos custom.descripcion_corta, custom.destacado y custom.upsells a partir de WooCommerce."><input type="checkbox" id="chk_metafields" checked> Metacampos (descr. corta, destacado, upsells)</label>
+      <label class="check-item" title="Publica cada producto en Tienda online y/o Point of Sale según la visibilidad TPV de WooCommerce (_pos_visibility): TPV y web, solo TPV o solo web."><input type="checkbox" id="chk_channels" checked> Canales de venta (Tienda online / TPV)</label>
       <label class="check-item"><input type="checkbox" id="chk_orders"> Pedidos</label>
       <label class="check-item" title="Al terminar la migración completa, borra en Shopify los productos que no estén publicados en WooCommerce."><input type="checkbox" id="chk_prune"> Eliminar en Shopify lo que no esté en WooCommerce</label>
     </div>
@@ -568,6 +569,7 @@
       <button class="btn btn-secondary" onclick="startMigration('stock')">↻ Solo actualizar stock/precios</button>
       <button class="btn btn-secondary" onclick="startMigration('new')">＋ Solo productos nuevos</button>
       <button class="btn btn-secondary" onclick="startMigration('categories')" title="Solo crea/actualiza el árbol de categorías como metaobjetos y asigna las categorías a los productos ya existentes en Shopify. No toca productos.">🌳 Solo categorías (árbol)</button>
+      <button class="btn btn-secondary" onclick="startMigration('channels')" title="Solo publica los productos ya existentes en Shopify en Tienda online y/o Point of Sale según la visibilidad TPV de WooCommerce. No toca nada más.">🛒 Solo canales de venta</button>
       <button class="btn btn-secondary" onclick="runComparison()">⇄ Comparar inventario</button>
       <button class="btn btn-secondary" onclick="exportLog()">⬇ Exportar log</button>
     </div>
@@ -722,6 +724,7 @@ function getConfig() {
     },
     syncCategoryTree: document.getElementById('chk_cattree').checked,
     syncMetafields: document.getElementById('chk_metafields').checked,
+    syncChannels: document.getElementById('chk_channels').checked,
     syncOrders: document.getElementById('chk_orders').checked,
     pruneOrphans: document.getElementById('chk_prune').checked,
   };
@@ -1264,7 +1267,7 @@ async function shopifyGraphQL(cfg, query, variables = {}, signal) {
     return shopifyGraphQL(cfg, query, variables, signal);
   }
   if (res.status === 403 || res.status === 401) {
-    throw new Error(`Shopify ${res.status}: acceso denegado. La app necesita los scopes de metaobjetos; vuelve a autorizarla desde "Conectar con Shopify".`);
+    throw new Error(`Shopify ${res.status}: acceso denegado. La app necesita permisos que no tiene (metaobjetos o publicaciones); vuelve a autorizarla con "Autenticar con Shopify".`);
   }
   if (!res.ok) throw new Error(`Shopify GraphQL ${res.status}: ${await res.text()}`);
   const json = await res.json();
@@ -1275,7 +1278,7 @@ async function shopifyGraphQL(cfg, query, variables = {}, signal) {
       return shopifyGraphQL(cfg, query, variables, signal);
     }
     if (json.errors.some(e => e.extensions?.code === 'ACCESS_DENIED')) {
-      throw new Error('Shopify GraphQL: acceso denegado. La app necesita los scopes de metaobjetos; vuelve a autorizarla desde "Conectar con Shopify".');
+      throw new Error('Shopify GraphQL: acceso denegado. La app necesita permisos que no tiene (metaobjetos o publicaciones); vuelve a autorizarla con "Autenticar con Shopify".');
     }
     throw new Error(`Shopify GraphQL: ${json.errors.map(e => e.message).join('; ')}`);
   }
@@ -1552,6 +1555,107 @@ async function syncProductMetafields(cfg, wooProducts, signal) {
   log(`=== Metacampos: ${written} escritos en ${wooProducts.length - unmatched} productos · ${unmatched} sin match en Shopify ===`, 'ok');
 }
 
+// ─── Canales de venta: Tienda online / Point of Sale ─────────────────────────
+// CHANNELS-PURE-BEGIN
+// _pos_visibility (plugin WooCommerce Point of Sale) → canales de Shopify. Sin dato, el plugin
+// muestra el producto en ambos. Un valor desconocido devuelve null y el producto no se toca.
+const POS_VISIBILITY_CHANNELS = {
+  pos_online: { online: true, pos: true },
+  pos: { online: false, pos: true },
+  online: { online: true, pos: false },
+};
+const CHANNELS_BATCH = 20; // productos por petición (hasta 2 mutaciones cada uno)
+
+function wooSalesChannels(woo) {
+  const v = wooPosVisibility(woo);
+  if (v === null) return { ...POS_VISIBILITY_CHANNELS.pos_online };
+  return POS_VISIBILITY_CHANNELS[v] ? { ...POS_VISIBILITY_CHANNELS[v] } : null;
+}
+
+// Publicaciones "Tienda online" y "Point of Sale" por nombre (el nombre depende del idioma de la tienda).
+function findSalesPublications(nodes) {
+  const find = (re) => (nodes || []).find(n => re.test(n.name || ''))?.id || null;
+  return {
+    online: find(/online store|tienda online|tienda en l[ií]nea/i),
+    pos: find(/point of sale|punto de venta/i),
+  };
+}
+
+// Una sola petición GraphQL para un lote: por producto, publica en sus canales y despublica del resto.
+function channelMutation(entries, pubs) {
+  const decls = [];
+  const fields = [];
+  const variables = {};
+  entries.forEach(({ shopifyId, channels }, i) => {
+    const on = [], off = [];
+    (channels.online ? on : off).push({ publicationId: pubs.online });
+    (channels.pos ? on : off).push({ publicationId: pubs.pos });
+    variables[`id${i}`] = `gid://shopify/Product/${shopifyId}`;
+    decls.push(`$id${i}: ID!`);
+    if (on.length) {
+      variables[`pub${i}`] = on;
+      decls.push(`$pub${i}: [PublicationInput!]!`);
+      fields.push(`p${i}: publishablePublish(id: $id${i}, input: $pub${i}) { userErrors { field message } }`);
+    }
+    if (off.length) {
+      variables[`unpub${i}`] = off;
+      decls.push(`$unpub${i}: [PublicationInput!]!`);
+      fields.push(`u${i}: publishableUnpublish(id: $id${i}, input: $unpub${i}) { userErrors { field message } }`);
+    }
+  });
+  return { query: `mutation(${decls.join(', ')}) {\n${fields.join('\n')}\n}`, variables };
+}
+// CHANNELS-PURE-END
+
+async function getSalesPublications(cfg, signal) {
+  const data = await shopifyGraphQL(cfg, `{ publications(first: 50) { nodes { id name } } }`, {}, signal);
+  return findSalesPublications(data.publications.nodes);
+}
+
+// Publica cada producto en Tienda online y/o Point of Sale según _pos_visibility de Woo.
+async function syncSalesChannels(cfg, wooProducts, signal) {
+  log('=== Sincronizando canales de venta (Tienda online / Point of Sale) ===', 'info');
+  let pubs;
+  try {
+    pubs = await getSalesPublications(cfg, signal);
+  } catch (e) {
+    log(`✗ No se pudieron leer los canales de Shopify: ${e.message}`, 'err');
+    return;
+  }
+  if (!pubs.online || !pubs.pos) {
+    log(`✗ Falta el canal ${!pubs.online ? '"Tienda online"' : '"Point of Sale"'} en Shopify: instálalo y vuelve a lanzar este paso.`, 'err');
+    return;
+  }
+
+  const { idOf: shopifyIdOf } = shopifyResolver(wooProducts, await getAllShopifyProducts(cfg, signal));
+  const entries = [];
+  const tally = { both: 0, posOnly: 0, onlineOnly: 0 };
+  let unmatched = 0, unknown = 0;
+  for (const woo of wooProducts) {
+    const channels = wooSalesChannels(woo);
+    if (!channels) { unknown++; log(`↷ Valor de _pos_visibility desconocido en "${woo.name}": ${wooPosVisibility(woo)}`, 'warn'); continue; }
+    const shopifyId = shopifyIdOf(woo);
+    if (!shopifyId) { unmatched++; continue; }
+    entries.push({ shopifyId, channels });
+    tally[channels.online && channels.pos ? 'both' : channels.pos ? 'posOnly' : 'onlineOnly']++;
+  }
+
+  let done = 0;
+  for (const batch of chunk(entries, CHANNELS_BATCH)) {
+    if (signal?.aborted) break;
+    try {
+      const { query, variables } = channelMutation(batch, pubs);
+      const data = await shopifyGraphQL(cfg, query, variables, signal);
+      const errors = Object.values(data).flatMap(r => r?.userErrors || []);
+      throwUserErrors('publicación por canal', errors);
+      done += batch.length;
+    } catch (e) {
+      log(`✗ Error publicando canales (lote de ${batch.length}): ${e.message}`, 'err');
+    }
+  }
+  log(`=== Canales: ${done} de ${entries.length} productos (${tally.both} tienda y TPV · ${tally.posOnly} solo TPV · ${tally.onlineOnly} solo tienda) · ${unmatched} sin match en Shopify${unknown ? ` · ${unknown} con valor desconocido` : ''} ===`, done === entries.length ? 'ok' : 'warn');
+}
+
 async function syncCategoryTree(cfg, signal, wooProducts) {
   log('=== Sincronizando categorías → metaobjetos (árbol) ===', 'info');
 
@@ -1767,6 +1871,33 @@ function wooUnpublishedLabel(woo) {
 // Estado del producto en Shopify: solo lo publicado en Woo queda activo; el resto, en borrador.
 function shopifyStatusFor(woo) {
   return woo?.status === 'publish' ? 'active' : 'draft';
+}
+
+// Visibilidad en el TPV según el plugin WooCommerce Point of Sale (metacampo _pos_visibility).
+// Diagnóstico: aún no se traslada a los canales de Shopify.
+function wooPosVisibility(woo) {
+  const meta = (woo?.meta_data || []).find(m => m.key === '_pos_visibility');
+  return meta && meta.value !== '' ? String(meta.value) : null;
+}
+
+// Recuento por combinación estado × visibilidad de catálogo × visibilidad TPV, de más a menos.
+function wooVisibilityBreakdown(wooProducts) {
+  const groups = new Map();
+  wooProducts.forEach(w => {
+    const row = { status: w.status || null, catalog: w.catalog_visibility || 'visible', pos: wooPosVisibility(w) };
+    const key = `${row.status}|${row.catalog}|${row.pos ?? ''}`;
+    groups.set(key, { ...row, count: (groups.get(key)?.count || 0) + 1 });
+  });
+  return [...groups.entries()]
+    .sort(([ka, a], [kb, b]) => (b.count - a.count) || ka.localeCompare(kb))
+    .map(([, row]) => row);
+}
+
+// Claves de metacampo que contienen "pos": por si la visibilidad del TPV se guarda con otro nombre.
+function wooPosMetaKeys(wooProducts) {
+  const keys = new Set();
+  wooProducts.forEach(w => (w.meta_data || []).forEach(m => { if (/pos/i.test(m.key)) keys.add(m.key); }));
+  return [...keys].sort();
 }
 
 // Productos de Woo contra los que se buscan sobrantes en Shopify. Un borrador (o pendiente,
@@ -2202,6 +2333,7 @@ async function runComparison() {
     if (hiddenOnly) log(`${hiddenOnly} de los "solo WooCommerce" están ocultos en Woo y no se sincronizan por decisión de negocio`, 'info');
     const variables = wooProducts.filter(w => w.type === 'variable').length;
     if (variables) log(`${variables} productos variables: solo se compara el precio (el stock por talla no se descarga en la comparación)`, 'info');
+    logVisibilityBreakdown(wooProducts);
     log(`=== Comparación: ${count('synced')} sincronizados · ${count('diff')} diferentes · ${count('woo_only')} solo WooCommerce · ${count('shopify_only')} solo Shopify ===`, 'ok');
     document.getElementById('cmpPanel').style.display = '';
     renderComparison();
@@ -2223,6 +2355,17 @@ function setCmpFilter(status) {
 
 const fmtPrice = (n) => n === null ? '—' : n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
 const fmtStock = (n) => n === null ? '—' : String(n);
+// Diagnóstico de visibilidad en WooCommerce: estado × catálogo × TPV, para decidir cómo
+// trasladarla a los canales de Shopify (Tienda online / Point of Sale).
+function logVisibilityBreakdown(wooProducts) {
+  log('--- Visibilidad en WooCommerce (estado · catálogo · TPV) ---', 'info');
+  wooVisibilityBreakdown(wooProducts).forEach(r => {
+    log(`${String(r.count).padStart(4)} · ${r.status} · catálogo: ${r.catalog} · TPV (_pos_visibility): ${r.pos ?? '(sin dato)'}`, 'info');
+  });
+  const posKeys = wooPosMetaKeys(wooProducts);
+  log(posKeys.length ? `Metacampos con "pos" en los productos: ${posKeys.join(', ')}` : 'Ningún producto trae metacampos con "pos" en la API: el plugin TPV no los expone por REST', posKeys.length ? 'info' : 'warn');
+}
+
 const CMP_STATUS_LABELS = { synced: 'Sincronizado', diff: 'Diferente', woo_only: 'Solo WooCommerce', shopify_only: 'Solo Shopify' };
 
 function cell(text, className) {
@@ -2305,7 +2448,7 @@ async function testShopify() {
 
 // ─── Migración principal ──────────────────────────────────────────────────────
 const PRODUCT_PAUSE_MS = 300;
-const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)' };
+const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)', channels: 'solo canales de venta' };
 
 // ─── Punto de reanudación ────────────────────────────────────────────────────
 // RESUME-PURE-BEGIN
@@ -2361,6 +2504,7 @@ async function startMigration(mode = 'full', resumeFrom = null) {
   const stockOnly = mode === 'stock';
   const newOnly = mode === 'new';
   const categoriesOnly = mode === 'categories';
+  const channelsOnly = mode === 'channels';
   shopifyLocationId = null;
   if (running) { log('Ya hay una sincronización en curso.', 'warn'); return; }
   const cfg = getConfig();
@@ -2391,6 +2535,14 @@ async function startMigration(mode = 'full', resumeFrom = null) {
     log(`Total productos WooCommerce a sincronizar: ${wooProducts.length}${drafts ? ` (${drafts} no publicados, irán como borrador en Shopify)` : ''}`, 'ok');
 
     // Modo solo categorías: no toca productos, solo el árbol y su asignación
+    // Modo solo canales: publica los productos ya existentes en Tienda online / Point of Sale
+    if (channelsOnly) {
+      await syncSalesChannels(cfg, wooProducts, signal);
+      log('=== Sincronización de canales completada ===', 'ok');
+      setStatus('success', 'COMPLETADO');
+      return;
+    }
+
     if (categoriesOnly) {
       await syncCategoryTree(cfg, signal, wooProducts);
       if (cfg.syncMetafields) await syncProductMetafields(cfg, wooProducts, signal);
@@ -2591,6 +2743,11 @@ async function startMigration(mode = 'full', resumeFrom = null) {
     // Metacampos de producto
     if (cfg.syncMetafields && mode === 'full' && !abortController.signal.aborted) {
       await syncProductMetafields(cfg, wooProducts, signal);
+    }
+
+    // Canales de venta (Tienda online / Point of Sale) según la visibilidad TPV de Woo
+    if (cfg.syncChannels && mode === 'full' && !abortController.signal.aborted) {
+      await syncSalesChannels(cfg, wooProducts, signal);
     }
 
     // Sincronizar pedidos

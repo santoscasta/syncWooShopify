@@ -8,7 +8,7 @@ redirect_urls = ["http://localhost:4000/auth/shopify/callback"]
 use_legacy_install_flow = true
 
 [access_scopes]
-scopes = "read_products,write_products,read_inventory,write_inventory,read_orders,write_orders,read_metaobjects,write_metaobjects,read_metaobject_definitions,write_metaobject_definitions"
+scopes = "read_products,write_products,read_inventory,write_inventory,read_orders,write_orders,read_metaobjects,write_metaobjects,read_metaobject_definitions,write_metaobject_definitions,read_publications,write_publications"
 
 [webhooks]
 api_version = "2025-01"
