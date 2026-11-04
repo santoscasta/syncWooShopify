@@ -368,6 +368,13 @@
     flex-shrink: 0;
   }
 
+  .check-item input[type="date"] {
+    width: auto;
+    padding: 2px 6px;
+    font-size: 11px;
+    color-scheme: dark;
+  }
+
   select option { background: var(--panel); }
 
   .badge {
@@ -490,6 +497,7 @@
       <label class="check-item" title="Escribe en cada producto los metacampos custom.descripcion_corta, custom.destacado y custom.upsells a partir de WooCommerce."><input type="checkbox" id="chk_metafields" checked> Metacampos (descr. corta, destacado, upsells)</label>
       <label class="check-item" title="Publica cada producto en Tienda online y/o Point of Sale según la visibilidad TPV de WooCommerce (_pos_visibility): TPV y web, solo TPV o solo web."><input type="checkbox" id="chk_channels" checked> Canales de venta (Tienda online / TPV)</label>
       <label class="check-item"><input type="checkbox" id="chk_orders"> Pedidos</label>
+      <span class="check-item" title="Solo se importan los pedidos creados a partir de esta fecha. En blanco, todos (16.956 en WooCommerce)."><label for="ordersSince">↳ desde</label> <input type="date" id="ordersSince"></span>
       <label class="check-item" title="Crea en Shopify un código de descuento por cada cupón publicado de WooCommerce. Omite los que Shopify no puede expresar igual (exclusiones, importe máximo, por categoría) y los lista al final para hacerlos a mano."><input type="checkbox" id="chk_coupons"> Vales (cupones → descuentos)</label>
       <label class="check-item" title="Al terminar la migración completa, borra en Shopify los productos que no estén publicados en WooCommerce."><input type="checkbox" id="chk_prune"> Eliminar en Shopify lo que no esté en WooCommerce</label>
     </div>
@@ -572,6 +580,7 @@
       <button class="btn btn-secondary" onclick="startMigration('categories')" title="Solo crea/actualiza el árbol de categorías como metaobjetos y asigna las categorías a los productos ya existentes en Shopify. No toca productos.">🌳 Solo categorías (árbol)</button>
       <button class="btn btn-secondary" onclick="startMigration('channels')" title="Solo publica los productos ya existentes en Shopify en Tienda online y/o Point of Sale según la visibilidad TPV de WooCommerce. No toca nada más.">🛒 Solo canales de venta</button>
       <button class="btn btn-secondary" onclick="startMigration('coupons')" title="Solo crea o actualiza en Shopify los códigos de descuento a partir de los cupones publicados de WooCommerce. No descarga el catálogo ni toca productos.">🎟 Solo vales (cupones)</button>
+      <button class="btn btn-secondary" onclick="startMigration('orders')" title="Solo importa pedidos de WooCommerce, desde la fecha indicada en «Pedidos ↳ desde». No descarga el catálogo ni toca productos.">📦 Solo pedidos (desde fecha)</button>
       <button class="btn btn-secondary" onclick="runComparison()">⇄ Comparar inventario</button>
       <button class="btn btn-secondary" onclick="exportLog()">⬇ Exportar log</button>
     </div>
@@ -628,7 +637,7 @@
 <script>
 // ─── Persistencia en localStorage ────────────────────────────────────────────
 function saveConfig() {
-  const fields = ['wooUrl','wooKey','wooSecret','shopifyUrl','shopifyClientId','shopifyToken','shopifyVersion','conflictMode'];
+  const fields = ['wooUrl','wooKey','wooSecret','shopifyUrl','shopifyClientId','shopifyToken','shopifyVersion','conflictMode','ordersSince'];
   const data = {};
   fields.forEach(id => { const el = document.getElementById(id); if (el) data[id] = el.value; });
   localStorage.setItem('woo-shopify-config', JSON.stringify(data));
@@ -728,6 +737,7 @@ function getConfig() {
     syncMetafields: document.getElementById('chk_metafields').checked,
     syncChannels: document.getElementById('chk_channels').checked,
     syncOrders: document.getElementById('chk_orders').checked,
+    ordersSince: document.getElementById('ordersSince').value,
     syncCoupons: document.getElementById('chk_coupons').checked,
     pruneOrphans: document.getElementById('chk_prune').checked,
   };
@@ -1867,11 +1877,17 @@ async function syncCoupons(cfg, signal) {
 async function syncOrders(cfg, signal) {
   log('=== Sincronizando pedidos ===', 'info');
 
-  // 1. Obtener pedidos de WooCommerce
+  // 1. Obtener pedidos de WooCommerce. `after` filtra en el servidor: sin él se bajarían
+  // los 16.956 pedidos para descartar casi todos.
+  const since = cfg.ordersSince ? `${cfg.ordersSince}T00:00:00` : null;
+  log(since ? `Solo pedidos creados desde ${cfg.ordersSince}` : 'Sin fecha de inicio: se importan todos los pedidos', since ? 'info' : 'warn');
+
   let wooOrders = [];
   let page = 1;
   while (true) {
-    const { data } = await wooRequest(cfg, 'orders', { per_page: 100, page, orderby: 'date', order: 'asc' }, signal);
+    const params = { per_page: 100, page, orderby: 'date', order: 'asc' };
+    if (since) params.after = since;
+    const { data } = await wooRequest(cfg, 'orders', params, signal);
     wooOrders = wooOrders.concat(data);
     log(`WooCommerce: página ${page} — ${data.length} pedidos`, 'info');
     if (data.length < 100) break;
@@ -2002,25 +2018,39 @@ function authShopify() {
     'shopify-auth', 'width=600,height=700'
   );
 
+  // Fija el token nuevo y lo guarda: asignar .value no dispara el evento input del autoguardado,
+  // y sin esto al recargar la página volvía el token anterior (sin los permisos nuevos).
+  let received = false;
+  const acceptToken = (token, via) => {
+    if (received) return;
+    received = true;
+    const field = document.getElementById('shopifyToken');
+    field.value = token;
+    field.removeAttribute('readonly');
+    saveConfig();
+    log(`✓ Token de Shopify obtenido${via}: ${token.slice(0, 12)}... (guardado)`, 'ok');
+  };
+
   // Escuchar el mensaje con el token desde la ventana de callback
   window.addEventListener('message', function handler(e) {
     if (e.data?.type === 'shopify-token' && e.data.token) {
-      document.getElementById('shopifyToken').value = e.data.token;
-      document.getElementById('shopifyToken').removeAttribute('readonly');
-      log(`✓ Token de Shopify obtenido: ${e.data.token.slice(0, 12)}...`, 'ok');
+      acceptToken(e.data.token, '');
       window.removeEventListener('message', handler);
     }
   });
 
-  // Fallback: polling del servidor por si postMessage falla
+  // Fallback: polling del servidor por si postMessage falla. Solo vale un token distinto del
+  // que el servidor tenía al empezar: el anterior no lleva los permisos recién pedidos.
+  let serverTokenBefore;
+  fetch('/auth/shopify/token').then(r => r.json()).then(d => { serverTokenBefore = d.token || null; }).catch(() => { serverTokenBefore = null; });
   const pollInterval = setInterval(async () => {
+    if (received) { clearInterval(pollInterval); return; }
+    if (serverTokenBefore === undefined) return;
     try {
       const res = await fetch('/auth/shopify/token');
       const data = await res.json();
-      if (data.token && !document.getElementById('shopifyToken').value) {
-        document.getElementById('shopifyToken').value = data.token;
-        document.getElementById('shopifyToken').removeAttribute('readonly');
-        log(`✓ Token de Shopify obtenido (polling): ${data.token.slice(0, 12)}...`, 'ok');
+      if (data.token && data.token !== serverTokenBefore) {
+        acceptToken(data.token, ' (polling)');
         clearInterval(pollInterval);
       }
     } catch {}
@@ -2629,7 +2659,7 @@ async function testShopify() {
 
 // ─── Migración principal ──────────────────────────────────────────────────────
 const PRODUCT_PAUSE_MS = 300;
-const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)', channels: 'solo canales de venta', coupons: 'solo vales (cupones)' };
+const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)', channels: 'solo canales de venta', coupons: 'solo vales (cupones)', orders: 'solo pedidos' };
 
 // ─── Punto de reanudación ────────────────────────────────────────────────────
 // RESUME-PURE-BEGIN
@@ -2687,6 +2717,7 @@ async function startMigration(mode = 'full', resumeFrom = null) {
   const categoriesOnly = mode === 'categories';
   const channelsOnly = mode === 'channels';
   const couponsOnly = mode === 'coupons';
+  const ordersOnly = mode === 'orders';
   shopifyLocationId = null;
   if (running) { log('Ya hay una sincronización en curso.', 'warn'); return; }
   const cfg = getConfig();
@@ -2707,6 +2738,14 @@ async function startMigration(mode = 'full', resumeFrom = null) {
     // si algún cupón se limita a productos concretos.
     if (couponsOnly) {
       await syncCoupons(cfg, signal);
+      setStatus('success', 'COMPLETADO');
+      return;
+    }
+
+    // Modo solo pedidos: syncOrders indexa los productos de Shopify por su cuenta, no
+    // necesita el catálogo de Woo.
+    if (ordersOnly) {
+      await syncOrders(cfg, signal);
       setStatus('success', 'COMPLETADO');
       return;
     }
