@@ -16,7 +16,7 @@ app.get('/auth/shopify', (req, res) => {
   if (!shop || !client_id) return res.status(400).send('Faltan shop o client_id');
 
   const redirectUri = `http://localhost:${PORT}/auth/shopify/callback`;
-  const scopes = 'read_products,write_products,read_inventory,write_inventory,read_metaobjects,write_metaobjects,read_metaobject_definitions,write_metaobject_definitions,read_publications,write_publications';
+  const scopes = 'read_products,write_products,read_inventory,write_inventory,read_orders,write_orders,read_metaobjects,write_metaobjects,read_metaobject_definitions,write_metaobject_definitions,read_publications,write_publications,read_discounts,write_discounts';
   const authUrl = `https://${shop}/admin/oauth/authorize?client_id=${client_id}&scope=${scopes}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
   res.redirect(authUrl);
@@ -59,7 +59,8 @@ app.get('/auth/shopify/callback', (req, res) => {
         const data = JSON.parse(body);
         if (data.access_token) {
           shopifyAccessToken = data.access_token;
-          console.log(`Token completo para ${shop}:`, JSON.stringify(data));
+          // Nunca el token: solo la tienda y los permisos concedidos, para ver si falta alguno.
+          console.log(`Shopify autorizado para ${shop} · permisos: ${data.scope || '(sin dato)'}`);
           // Redirigir de vuelta a la app con el token
           res.send(`
             <html><body>

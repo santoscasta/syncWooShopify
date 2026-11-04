@@ -490,6 +490,7 @@
       <label class="check-item" title="Escribe en cada producto los metacampos custom.descripcion_corta, custom.destacado y custom.upsells a partir de WooCommerce."><input type="checkbox" id="chk_metafields" checked> Metacampos (descr. corta, destacado, upsells)</label>
       <label class="check-item" title="Publica cada producto en Tienda online y/o Point of Sale según la visibilidad TPV de WooCommerce (_pos_visibility): TPV y web, solo TPV o solo web."><input type="checkbox" id="chk_channels" checked> Canales de venta (Tienda online / TPV)</label>
       <label class="check-item"><input type="checkbox" id="chk_orders"> Pedidos</label>
+      <label class="check-item" title="Crea en Shopify un código de descuento por cada cupón publicado de WooCommerce. Omite los que Shopify no puede expresar igual (exclusiones, importe máximo, por categoría) y los lista al final para hacerlos a mano."><input type="checkbox" id="chk_coupons"> Vales (cupones → descuentos)</label>
       <label class="check-item" title="Al terminar la migración completa, borra en Shopify los productos que no estén publicados en WooCommerce."><input type="checkbox" id="chk_prune"> Eliminar en Shopify lo que no esté en WooCommerce</label>
     </div>
 
@@ -570,6 +571,7 @@
       <button class="btn btn-secondary" onclick="startMigration('new')">＋ Solo productos nuevos</button>
       <button class="btn btn-secondary" onclick="startMigration('categories')" title="Solo crea/actualiza el árbol de categorías como metaobjetos y asigna las categorías a los productos ya existentes en Shopify. No toca productos.">🌳 Solo categorías (árbol)</button>
       <button class="btn btn-secondary" onclick="startMigration('channels')" title="Solo publica los productos ya existentes en Shopify en Tienda online y/o Point of Sale según la visibilidad TPV de WooCommerce. No toca nada más.">🛒 Solo canales de venta</button>
+      <button class="btn btn-secondary" onclick="startMigration('coupons')" title="Solo crea o actualiza en Shopify los códigos de descuento a partir de los cupones publicados de WooCommerce. No descarga el catálogo ni toca productos.">🎟 Solo vales (cupones)</button>
       <button class="btn btn-secondary" onclick="runComparison()">⇄ Comparar inventario</button>
       <button class="btn btn-secondary" onclick="exportLog()">⬇ Exportar log</button>
     </div>
@@ -726,6 +728,7 @@ function getConfig() {
     syncMetafields: document.getElementById('chk_metafields').checked,
     syncChannels: document.getElementById('chk_channels').checked,
     syncOrders: document.getElementById('chk_orders').checked,
+    syncCoupons: document.getElementById('chk_coupons').checked,
     pruneOrphans: document.getElementById('chk_prune').checked,
   };
 }
@@ -1682,6 +1685,184 @@ async function syncCategoryTree(cfg, signal, wooProducts) {
   log(`=== Categorías: ${ok}/${ordered.length} metaobjetos · ${assigned} productos asignados · ${unmatched} sin match en Shopify ===`, 'ok');
 }
 
+// ─── Vales (cupones) ──────────────────────────────────────────────────────────
+// COUPONS-PURE-BEGIN
+// Solo se migra el cupón cuya semántica Shopify puede expresar EXACTAMENTE. Las
+// restricciones que Shopify no tiene (exclusiones, importe máximo, tope de artículos,
+// límite por email, restricción por categoría) harían el descuento MÁS PERMISIVO si se
+// ignorasen — es decir, dinero de más descontado — así que esos cupones se omiten y se
+// listan al final para crearlos a mano.
+// Ver docs/superpowers/specs/2026-09-23-cupones-vales-design.md
+const COUPON_UNSUPPORTED = [
+  [(c) => (c.excluded_product_ids || []).length, 'excluye productos'],
+  [(c) => (c.excluded_product_categories || []).length, 'excluye categorías'],
+  [(c) => c.exclude_sale_items === true, 'excluye artículos rebajados'],
+  [(c) => Number(c.maximum_amount) > 0, 'tiene importe máximo'],
+  [(c) => c.limit_usage_to_x_items != null, 'limita el nº de artículos con descuento'],
+  [(c) => (c.email_restrictions || []).length, 'restringe por email'],
+  [(c) => (c.product_categories || []).length, 'se aplica por categoría (no hay colecciones en Shopify)'],
+];
+
+// Usos que le quedan al cupón. null = sin límite. Shopify no sabe de consumo previo,
+// así que se migra el RESTANTE, no el límite original.
+function couponRemainingUses(c) {
+  const limit = Number(c.usage_limit);
+  if (!Number.isFinite(limit) || limit <= 0) return null;
+  return limit - (Number(c.usage_count) || 0);
+}
+
+const couponMoney = (v) => (Math.round(Number(v) * 100) / 100).toFixed(2);
+
+function planCoupon(c, gidByWooId = new Map(), now = new Date()) {
+  if (!c || !c.code) return { skip: 'sin código' };
+  if (c.status && c.status !== 'publish') return { skip: `estado ${c.status}` };
+
+  const amount = Number(c.amount) || 0;
+  const freeShippingOnly = c.free_shipping === true && amount === 0;
+  if (!freeShippingOnly && amount <= 0) return { skip: 'importe 0' };
+  if (c.date_expires && new Date(c.date_expires) <= now) return { skip: 'caducado' };
+
+  const remaining = couponRemainingUses(c);
+  if (remaining !== null && remaining <= 0) return { skip: 'agotado, sin usos restantes' };
+
+  const perUser = Number(c.usage_limit_per_user) || 0;
+  if (perUser > 1) return { skip: `${perUser} usos por cliente (Shopify solo admite 1)` };
+
+  for (const [test, reason] of COUPON_UNSUPPORTED) if (test(c)) return { skip: reason };
+
+  const input = {
+    title: c.description ? String(c.description).slice(0, 255) : `Cupón Woo ${c.code}`,
+    code: c.code,
+    startsAt: new Date(c.date_created || now).toISOString(),
+    customerSelection: { all: true },
+    combinesWith: c.individual_use === true
+      ? { orderDiscounts: false, productDiscounts: false, shippingDiscounts: false }
+      : { orderDiscounts: true, productDiscounts: true, shippingDiscounts: true },
+    appliesOncePerCustomer: perUser === 1,
+  };
+  if (c.date_expires) input.endsAt = new Date(c.date_expires).toISOString();
+  if (remaining !== null) input.usageLimit = remaining;
+  const min = Number(c.minimum_amount) || 0;
+  if (min > 0) input.minimumRequirement = { subtotal: { greaterThanOrEqualToSubtotal: couponMoney(min) } };
+
+  if (freeShippingOnly) return { kind: 'freeShipping', input: { ...input, destination: { all: true } } };
+
+  // Productos concretos: todos deben existir ya en Shopify, si no el descuento saldría
+  // aplicando a más de la cuenta.
+  const wooIds = c.product_ids || [];
+  let items = { all: true };
+  if (wooIds.length) {
+    const gids = wooIds.map((id) => gidByWooId.get(Number(id))).filter(Boolean);
+    if (gids.length !== wooIds.length) {
+      return { skip: `${wooIds.length - gids.length} de sus ${wooIds.length} productos no están en Shopify` };
+    }
+    items = { products: { productsToAdd: gids } };
+  }
+
+  const value = c.discount_type === 'percent'
+    ? { percentage: Math.round(amount * 100) / 10000 }
+    : { discountAmount: { amount: couponMoney(amount), appliesOnEachItem: c.discount_type === 'fixed_product' } };
+
+  const plan = { kind: 'basic', input: { ...input, customerGets: { value, items } } };
+  if (c.free_shipping === true) plan.warn = 'además daba envío gratis: eso hay que añadirlo a mano';
+  return plan;
+}
+
+function couponSummary(plan) {
+  const i = plan.input;
+  if (plan.kind === 'freeShipping') return 'envío gratis';
+  const v = i.customerGets.value;
+  const what = v.percentage != null
+    ? `${Math.round(v.percentage * 10000) / 100}%`
+    : `${v.discountAmount.amount} €${v.discountAmount.appliesOnEachItem ? '/artículo' : ''}`;
+  const scope = i.customerGets.items.all ? 'todo' : `${i.customerGets.items.products.productsToAdd.length} productos`;
+  return `${what} sobre ${scope}${i.usageLimit != null ? `, ${i.usageLimit} usos` : ''}`;
+}
+// COUPONS-PURE-END
+
+const DISCOUNT_MUTATIONS = {
+  basic: {
+    create: `mutation($d: DiscountCodeBasicInput!) { discountCodeBasicCreate(basicCodeDiscount: $d) { userErrors { field message } } }`,
+    update: `mutation($id: ID!, $d: DiscountCodeBasicInput!) { discountCodeBasicUpdate(id: $id, basicCodeDiscount: $d) { userErrors { field message } } }`,
+    createKey: 'discountCodeBasicCreate', updateKey: 'discountCodeBasicUpdate',
+  },
+  freeShipping: {
+    create: `mutation($d: DiscountCodeFreeShippingInput!) { discountCodeFreeShippingCreate(freeShippingCodeDiscount: $d) { userErrors { field message } } }`,
+    update: `mutation($id: ID!, $d: DiscountCodeFreeShippingInput!) { discountCodeFreeShippingUpdate(id: $id, freeShippingCodeDiscount: $d) { userErrors { field message } } }`,
+    createKey: 'discountCodeFreeShippingCreate', updateKey: 'discountCodeFreeShippingUpdate',
+  },
+};
+
+async function getAllWooCoupons(cfg, signal) {
+  let page = 1, all = [];
+  while (true) {
+    const { data } = await wooRequest(cfg, 'coupons', { per_page: 100, page, status: 'publish' }, signal);
+    all = all.concat(data);
+    log(`WooCommerce: página ${page} — ${data.length} cupones`, 'info');
+    if (data.length < 100) break;
+    page++;
+  }
+  return all;
+}
+
+// Buscar por código hace el paso reejecutable: si el descuento ya existe se actualiza.
+async function findShopifyDiscountByCode(cfg, code, signal) {
+  const data = await shopifyGraphQL(cfg, `query($code: String!) { codeDiscountNodeByCode(code: $code) { id } }`, { code }, signal);
+  return data.codeDiscountNodeByCode?.id || null;
+}
+
+async function upsertShopifyDiscount(cfg, plan, signal) {
+  const m = DISCOUNT_MUTATIONS[plan.kind];
+  const existing = await findShopifyDiscountByCode(cfg, plan.input.code, signal);
+  const data = existing
+    ? await shopifyGraphQL(cfg, m.update, { id: existing, d: plan.input }, signal)
+    : await shopifyGraphQL(cfg, m.create, { d: plan.input }, signal);
+  throwUserErrors(`Cupón ${plan.input.code}`, data[existing ? m.updateKey : m.createKey]?.userErrors);
+  return existing ? 'updated' : 'created';
+}
+
+async function syncCoupons(cfg, signal) {
+  log('=== Sincronizando vales (cupones) ===', 'info');
+  const coupons = await getAllWooCoupons(cfg, signal);
+  log(`Total cupones publicados en WooCommerce: ${coupons.length}`, 'ok');
+  if (!coupons.length) return;
+
+  // El índice woo_id → producto solo hace falta si algún cupón limita por producto.
+  const gidByWooId = new Map();
+  if (coupons.some((c) => (c.product_ids || []).length)) {
+    const wooIdByShopifyId = await fetchShopifyWooIds(cfg, signal);
+    wooIdByShopifyId.forEach((wooId, shopifyId) => gidByWooId.set(wooId, `gid://shopify/Product/${shopifyId}`));
+  }
+
+  let created = 0, updated = 0, errors = 0;
+  const manual = [];
+  for (let i = 0; i < coupons.length; i++) {
+    if (signal?.aborted) { log('Sincronización de vales cancelada.', 'warn'); break; }
+    const c = coupons[i];
+    updateProgress(i + 1, coupons.length, `Cupón ${c.code}`);
+
+    const plan = planCoupon(c, gidByWooId);
+    if (plan.skip) {
+      manual.push(`${c.code} (${plan.skip})`);
+      log(`↷ ${c.code}: ${plan.skip}`, 'warn');
+      continue;
+    }
+    try {
+      const action = await upsertShopifyDiscount(cfg, plan, signal);
+      action === 'created' ? created++ : updated++;
+      log(`${action === 'created' ? '+' : '~'} ${c.code} — ${couponSummary(plan)}`, 'ok');
+      if (plan.warn) log(`  ⚠ ${c.code}: ${plan.warn}`, 'warn');
+    } catch (e) {
+      log(`✗ Cupón ${c.code}: ${e.message}`, 'err');
+      errors++;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  log(`=== Vales: ${created} creados · ${updated} actualizados · ${manual.length} a mano · ${errors} errores ===`, errors ? 'warn' : 'ok');
+  if (manual.length) log(`Crear a mano en Shopify: ${manual.join(' · ')}`, 'warn');
+}
+
 // ─── Pedidos ──────────────────────────────────────────────────────────────────
 async function syncOrders(cfg, signal) {
   log('=== Sincronizando pedidos ===', 'info');
@@ -2448,7 +2629,7 @@ async function testShopify() {
 
 // ─── Migración principal ──────────────────────────────────────────────────────
 const PRODUCT_PAUSE_MS = 300;
-const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)', channels: 'solo canales de venta' };
+const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)', channels: 'solo canales de venta', coupons: 'solo vales (cupones)' };
 
 // ─── Punto de reanudación ────────────────────────────────────────────────────
 // RESUME-PURE-BEGIN
@@ -2505,6 +2686,7 @@ async function startMigration(mode = 'full', resumeFrom = null) {
   const newOnly = mode === 'new';
   const categoriesOnly = mode === 'categories';
   const channelsOnly = mode === 'channels';
+  const couponsOnly = mode === 'coupons';
   shopifyLocationId = null;
   if (running) { log('Ya hay una sincronización en curso.', 'warn'); return; }
   const cfg = getConfig();
@@ -2520,6 +2702,14 @@ async function startMigration(mode = 'full', resumeFrom = null) {
 
   try {
     const signal = abortController.signal;
+
+    // Modo solo vales: no hace falta el catálogo; syncCoupons pide el índice woo_id solo
+    // si algún cupón se limita a productos concretos.
+    if (couponsOnly) {
+      await syncCoupons(cfg, signal);
+      setStatus('success', 'COMPLETADO');
+      return;
+    }
 
     // 1. Obtener productos de WooCommerce
     log('Descargando catálogo de WooCommerce...', 'info');
@@ -2753,6 +2943,11 @@ async function startMigration(mode = 'full', resumeFrom = null) {
     // Sincronizar pedidos
     if (cfg.syncOrders && mode === 'full' && !abortController.signal.aborted) {
       await syncOrders(cfg, signal);
+    }
+
+    // Vales (cupones de Woo → códigos de descuento de Shopify)
+    if (cfg.syncCoupons && mode === 'full' && !abortController.signal.aborted) {
+      await syncCoupons(cfg, signal);
     }
 
     // Eliminar en Shopify lo que no exista en WooCommerce (opcional, solo migración completa)
