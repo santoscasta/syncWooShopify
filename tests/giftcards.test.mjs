@@ -9,8 +9,8 @@ assert.ok(m, 'No se encontró el bloque GIFTCARDS-PURE en el HTML');
 // CUPON_ES_VALE vive en el bloque de cupones, que en la página se evalúa antes que este.
 const cup = html.match(/\/\/ COUPONS-PURE-BEGIN([\s\S]*?)\/\/ COUPONS-PURE-END/);
 assert.ok(cup, 'No se encontró el bloque COUPONS-PURE en el HTML');
-const exporta = 'giftCardCode, notaDelPedido, importeDeNota, refsDeNota, importeDelVale, cadenasDeVales, parseConfirmados, giftCardNote, planGiftCard, notasEscritasAMano, estadoSegunNotasPedido, cuponesDeVales, estadoSegunCupon, estadoCombinado, valesSoloEnCupon, planCoupon';
-const { giftCardCode, notaDelPedido, importeDeNota, refsDeNota, importeDelVale, cadenasDeVales, parseConfirmados, giftCardNote, planGiftCard, notasEscritasAMano, estadoSegunNotasPedido, cuponesDeVales, estadoSegunCupon, estadoCombinado, valesSoloEnCupon, planCoupon } =
+const exporta = 'giftCardCode, notaDelPedido, importeDeNota, refsDeNota, importeDelVale, cadenasDeVales, parseConfirmados, giftCardNote, planGiftCard, notasEscritasAMano, estadoSegunNotasPedido, cuponesDeVales, estadoSegunCupon, estadoCombinado, valesSoloEnCupon, planCoupon, valeIndexHandle, valeIndexTitulo, valeIndexFields, adminGiftCardUrl, eurosEs';
+const { giftCardCode, notaDelPedido, importeDeNota, refsDeNota, importeDelVale, cadenasDeVales, parseConfirmados, giftCardNote, planGiftCard, notasEscritasAMano, estadoSegunNotasPedido, cuponesDeVales, estadoSegunCupon, estadoCombinado, valesSoloEnCupon, planCoupon, valeIndexHandle, valeIndexTitulo, valeIndexFields, adminGiftCardUrl, eurosEs } =
   new Function(`${cup[1]}\n${m[1]}; return { ${exporta} };`)();
 
 // ── Código: Shopify exige 8-20 caracteres, solo a-z y 0-9 ──
@@ -287,3 +287,39 @@ assert.equal(pegada.get(13055).importe, 29);
 assert.equal(pegada.get(14503).importe, 100);
 assert.equal(pegada.get(23661).importe, null, 'sin importe se queda con el de la nota');
 console.log('giftcards: OK (lista pegada)');
+
+// ── Índice de vales: lo único que busca la lista de metaobjetos es el nombre visible ──
+assert.equal(valeIndexHandle(23360), 'vale-23360');
+assert.equal(eurosEs(1), '1,00 €', 'importes en español, que es lo que ella lee');
+assert.equal(eurosEs(23.5), '23,50 €');
+assert.equal(valeIndexTitulo({ numero: 23360, cliente: 'Maria Barrau' }, 1),
+  '23360 · Maria Barrau · 1,00 € · vale23360',
+  'empieza por el número de pedido: buscar "23360" en tarjetas regalo no devuelve nada y aquí sí');
+assert.equal(valeIndexTitulo({ numero: 14503, cliente: null }, 100), '14503 · 100,00 € · vale14503',
+  'muchos vales se vendieron en el TPV sin cliente');
+
+// El panel usa el nombre de la tienda, no el dominio, y el id numérico va dentro del GID.
+assert.equal(adminGiftCardUrl('miminileodev.myshopify.com', 'gid://shopify/GiftCard/1324048712057'),
+  'https://admin.shopify.com/store/miminileodev/gift_cards/1324048712057');
+assert.equal(adminGiftCardUrl('', 'gid://shopify/GiftCard/1'), null);
+assert.equal(adminGiftCardUrl('miminileodev.myshopify.com', null), null, 'sin tarjeta no se inventa enlace');
+
+const campos = valeIndexFields(
+  { numero: 23360, cliente: 'Maria Barrau', fecha: '2026-09-22' },
+  { importe: 1, nota: 'Vale de WooCommerce #23360', giftCardGid: 'gid://shopify/GiftCard/1324048712057', shopifyUrl: 'miminileodev.myshopify.com' },
+);
+const porClave = new Map(campos.map((f) => [f.key, f.value]));
+assert.equal(porClave.get('numero'), '23360');
+assert.equal(porClave.get('codigo'), 'vale23360');
+assert.equal(porClave.get('saldo'), '1.00', 'number_decimal quiere punto, no coma');
+assert.equal(porClave.get('fecha'), '2026-09-22');
+assert.equal(porClave.get('historia'), 'Vale de WooCommerce #23360');
+assert.match(porClave.get('tarjeta'), /^https:\/\/admin\.shopify\.com\/store\/miminileodev\/gift_cards\/\d+$/);
+
+// Una fecha a medias tira la entrada entera, así que no se manda.
+const sinFecha = valeIndexFields({ numero: 99, cliente: null, fecha: '2024' }, { importe: 5 });
+assert.ok(!sinFecha.some((f) => f.key === 'fecha'), 'fecha incompleta: mejor no mandarla');
+assert.ok(!sinFecha.some((f) => f.key === 'cliente'), 'sin cliente no se manda el campo vacío');
+assert.ok(!sinFecha.some((f) => f.key === 'tarjeta'), 'sin tarjeta no hay enlace');
+
+console.log('✓ índice de vales (metaobjetos)');

@@ -597,6 +597,7 @@
       <button class="btn btn-secondary" onclick="startMigration('coupons')" title="Solo crea o actualiza en Shopify los códigos de descuento a partir de los cupones publicados de WooCommerce. No descarga el catálogo ni toca productos.">🎟 Solo vales (cupones)</button>
       <button class="btn btn-secondary" onclick="startMigration('orders')" title="Solo importa pedidos de WooCommerce, desde la fecha indicada en «Pedidos ↳ desde». No descarga el catálogo ni toca productos.">📦 Solo pedidos (desde fecha)</button>
       <button class="btn btn-secondary" onclick="startMigration('giftcards')" title="Crea una tarjeta regalo por cada vale vendido de la lista confirmada. Con la lista vacía solo simula y no crea nada.">💳 Solo vales vendidos (tarjetas regalo)</button>
+      <button class="btn btn-secondary" onclick="startMigration('valesindex')" title="No crea tarjetas: apunta las ya creadas en Contenido → Metaobjetos para poder buscarlas por el número de pedido, y las enlaza con su cliente si la app tiene permiso.">🔎 Índice de vales (buscar por nº de pedido)</button>
       <button class="btn btn-secondary" onclick="runComparison()">⇄ Comparar inventario</button>
       <button class="btn btn-secondary" onclick="runOrdersComparison()" title="Comprueba si los pedidos de WooCommerce creados desde la fecha de «Pedidos ↳ desde» ya están en Shopify. Solo lee: no crea ni cambia nada.">⇄ Comparar pedidos (desde fecha)</button>
       <button class="btn btn-secondary" onclick="exportLog()">⬇ Exportar log</button>
@@ -2187,10 +2188,60 @@ function planGiftCard(vale, { confirmados = null, gastadoPor = new Map(), ahora 
     aviso: gastado ? `la estimación lo daba por gastado (su resto pasó al vale ${gastado.join(' y ')})` : null,
   };
 }
+// ─── Índice de vales (metaobjetos) ────────────────────────────────────────────
+// El buscador de tarjetas regalo de Shopify solo encuentra por el código, y del código
+// únicamente enseña los cuatro últimos caracteres: escribir "23360" no devuelve nada y la
+// nota, donde está toda la historia, no se puede buscar. Este índice es la única forma de
+// llegar a una tarjeta desde el número de pedido sin salir del panel: una entrada por vale
+// en Contenido → Metaobjetos, cuyo nombre visible —lo único que filtra esa lista— empieza
+// por el número.
+const VALE_INDEX_TYPE = 'vale_migrado';
+
+function valeIndexHandle(numero) {
+  return `vale-${numero}`;
+}
+
+function eurosEs(importe) {
+  return `${Number(importe).toFixed(2).replace('.', ',')} €`;
+}
+
+// Lleva todo lo que ella teclearía: número de pedido, cliente y código de la tarjeta.
+function valeIndexTitulo(vale, importe) {
+  const partes = [String(vale.numero)];
+  if (vale.cliente) partes.push(vale.cliente);
+  partes.push(eurosEs(importe), giftCardCode(vale.numero));
+  return partes.join(' · ');
+}
+
+// El panel no usa el dominio myshopify sino el nombre de la tienda, y el id numérico de la
+// tarjeta viene dentro del GID.
+function adminGiftCardUrl(shopifyUrl, giftCardGid) {
+  const tienda = String(shopifyUrl || '').replace(/\.myshopify\.com$/, '').trim();
+  const id = String(giftCardGid || '').split('/').pop();
+  if (!tienda || !/^\d+$/.test(id)) return null;
+  return `https://admin.shopify.com/store/${tienda}/gift_cards/${id}`;
+}
+
+function valeIndexFields(vale, { importe, nota = null, giftCardGid = null, shopifyUrl = null } = {}) {
+  const fields = [
+    { key: 'titulo', value: valeIndexTitulo(vale, importe) },
+    { key: 'numero', value: String(vale.numero) },
+    { key: 'codigo', value: giftCardCode(vale.numero) },
+    { key: 'saldo', value: Number(importe).toFixed(2) },
+  ];
+  if (vale.cliente) fields.push({ key: 'cliente', value: vale.cliente });
+  // El campo es de tipo fecha: una fecha a medias lo rechaza entero, mejor no mandarla.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(vale.fecha || ''))) fields.push({ key: 'fecha', value: vale.fecha });
+  if (nota) fields.push({ key: 'historia', value: nota });
+  const url = adminGiftCardUrl(shopifyUrl, giftCardGid);
+  if (url) fields.push({ key: 'tarjeta', value: url });
+  return fields;
+}
 // GIFTCARDS-PURE-END
 
 const GIFT_CARD_SEARCH = `query($q: String!) { giftCards(first: 10, query: $q) { nodes { id note } } }`;
 const GIFT_CARD_CREATE = `mutation($input: GiftCardCreateInput!) { giftCardCreate(input: $input) { giftCard { id } userErrors { field message } } }`;
+const GIFT_CARD_UPDATE = `mutation($id: ID!, $input: GiftCardUpdateInput!) { giftCardUpdate(id: $id, input: $input) { giftCard { id } userErrors { field message } } }`;
 const CUSTOMER_SEARCH = `query($q: String!) { customers(first: 2, query: $q) { nodes { id } } }`;
 
 // Los pedidos de vales son los que llevan el producto VALE o TARJETA REGALO.
@@ -2268,11 +2319,12 @@ async function getAllWooVales(cfg, signal) {
 // Reejecutable: el código de la tarjeta no se puede leer entero, pero la búsqueda por
 // defecto sí acepta el código, y la nota lleva el número de pedido para confirmar que es
 // la misma. Sin esta comprobación, repetir el paso duplicaría tarjetas con saldo.
+// Devuelve el nodo (id y nota), que el índice de vales necesita entero.
 async function findShopifyGiftCard(cfg, vale, signal) {
   const code = giftCardCode(vale.numero);
   const data = await shopifyGraphQL(cfg, GIFT_CARD_SEARCH, { q: code }, signal);
   const marca = `#${vale.numero}`;
-  return (data.giftCards?.nodes || []).find((g) => (g.note || '').includes(marca))?.id || null;
+  return (data.giftCards?.nodes || []).find((g) => (g.note || '').includes(marca)) || null;
 }
 
 // Enlazar el cliente hace que la tarjeta salga también en su ficha. Sin email no hay forma
@@ -2363,6 +2415,115 @@ async function syncGiftCards(cfg, signal) {
   const hechas = confirmados ? `${creadas} creadas · ${existentes} ya existían` : `${simuladas} se crearían`;
   log(`=== Vales: ${hechas} · ${omitidos.length} omitidos · ${errores} errores ===`, errores ? 'warn' : 'ok');
   if (omitidos.length) log(`Omitidos: ${omitidos.join(' · ')}`, 'info');
+}
+
+// Crea (si no existe) la definición de metaobjeto `vale_migrado` y devuelve su GID. Es un
+// índice interno de la tienda, así que no se publica en el escaparate.
+async function ensureValeIndexDefinition(cfg, signal) {
+  const found = await shopifyGraphQL(cfg, `
+    query($type: String!) { metaobjectDefinitionByType(type: $type) { id } }
+  `, { type: VALE_INDEX_TYPE }, signal);
+  if (found.metaobjectDefinitionByType) return found.metaobjectDefinitionByType.id;
+
+  const created = await shopifyGraphQL(cfg, `
+    mutation($definition: MetaobjectDefinitionCreateInput!) {
+      metaobjectDefinitionCreate(definition: $definition) {
+        metaobjectDefinition { id }
+        userErrors { field message }
+      }
+    }
+  `, {
+    definition: {
+      type: VALE_INDEX_TYPE,
+      name: 'Vale migrado',
+      displayNameKey: 'titulo',
+      access: { storefront: 'NONE' },
+      fieldDefinitions: [
+        { key: 'titulo', name: 'Vale', type: 'single_line_text_field', required: true },
+        { key: 'numero', name: 'Pedido de WooCommerce', type: 'single_line_text_field' },
+        { key: 'codigo', name: 'Código de la tarjeta', type: 'single_line_text_field' },
+        { key: 'cliente', name: 'Cliente', type: 'single_line_text_field' },
+        { key: 'saldo', name: 'Saldo migrado (€)', type: 'number_decimal' },
+        { key: 'fecha', name: 'Fecha del vale', type: 'date' },
+        { key: 'tarjeta', name: 'Tarjeta en el panel', type: 'url' },
+        { key: 'historia', name: 'Historia del vale', type: 'multi_line_text_field' },
+      ],
+    },
+  }, signal);
+  throwUserErrors('No se pudo crear la definición "Vale migrado"', created.metaobjectDefinitionCreate?.userErrors);
+  log('+ Definición de metaobjeto "Vale migrado" creada', 'ok');
+  return created.metaobjectDefinitionCreate.metaobjectDefinition.id;
+}
+
+// Índice de las tarjetas ya creadas, y de paso el enlace con su cliente. Las dos cosas son
+// el mismo recorrido —vale por vale, buscando su tarjeta— y ninguna toca saldos.
+async function syncValeIndex(cfg, signal) {
+  log('=== Índice de vales: una entrada por tarjeta en Contenido → Metaobjetos ===', 'info');
+  const confirmados = cfg.valesConfirmados?.trim() ? parseConfirmados(cfg.valesConfirmados) : null;
+  if (!confirmados) {
+    log('Sin lista confirmada no hay nada que indexar: son exactamente los vales que se migraron.', 'warn');
+    return;
+  }
+  await ensureValeIndexDefinition(cfg, signal);
+
+  const vales = await getAllWooVales(cfg, signal);
+  const { gastadoPor, procedeDe } = cadenasDeVales(vales);
+  let indexados = 0, enlazados = 0, sinTarjeta = 0, errores = 0;
+
+  for (let i = 0; i < vales.length; i++) {
+    if (signal?.aborted) { log('Índice de vales cancelado.', 'warn'); break; }
+    const vale = { ...vales[i], procedeDe: procedeDe.get(vales[i].numero) || [] };
+    updateProgress(i + 1, vales.length, `Vale #${vale.numero}`);
+
+    const plan = planGiftCard(vale, { confirmados, gastadoPor });
+    if (plan.skip) continue;
+
+    try {
+      const tarjeta = await findShopifyGiftCard(cfg, vale, signal);
+      if (!tarjeta) {
+        log(`↷ #${vale.numero}: no hay tarjeta creada todavía, no se indexa`, 'warn');
+        sinTarjeta++;
+        continue;
+      }
+      const data = await shopifyGraphQL(cfg, `
+        mutation($handle: MetaobjectHandleInput!, $metaobject: MetaobjectUpsertInput!) {
+          metaobjectUpsert(handle: $handle, metaobject: $metaobject) {
+            metaobject { id }
+            userErrors { field message }
+          }
+        }
+      `, {
+        handle: { type: VALE_INDEX_TYPE, handle: valeIndexHandle(vale.numero) },
+        metaobject: {
+          fields: valeIndexFields(vale, {
+            importe: Number(plan.input.initialValue),
+            nota: tarjeta.note,
+            giftCardGid: tarjeta.id,
+            shopifyUrl: cfg.shopifyUrl,
+          }),
+        },
+      }, signal);
+      throwUserErrors(`Índice del vale #${vale.numero}`, data.metaobjectUpsert?.userErrors);
+      indexados++;
+
+      // El enlace con el cliente solo sale si la app tiene permiso de clientes; sin él,
+      // findShopifyCustomer avisa una vez y devuelve null, y el índice sigue su camino.
+      const customerId = await findShopifyCustomer(cfg, vale.email, signal);
+      if (customerId) {
+        const upd = await shopifyGraphQL(cfg, GIFT_CARD_UPDATE, { id: tarjeta.id, input: { customerId } }, signal);
+        throwUserErrors(`Cliente del vale #${vale.numero}`, upd.giftCardUpdate?.userErrors);
+        enlazados++;
+      }
+      log(`+ ${valeIndexTitulo(vale, Number(plan.input.initialValue))}${customerId ? ' · enlazada a su cliente' : ''}`, 'ok');
+    } catch (e) {
+      log(`✗ Vale #${vale.numero}: ${e.message}`, 'err');
+      errores++;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  log(`=== Índice: ${indexados} entradas · ${enlazados} tarjetas enlazadas a su cliente · ${sinTarjeta} sin tarjeta · ${errores} errores ===`, errores ? 'warn' : 'ok');
+  if (indexados) log('Búscalos en Contenido → Metaobjetos → Vale migrado, escribiendo el número de pedido.', 'info');
 }
 
 // ─── Pedidos ──────────────────────────────────────────────────────────────────
@@ -3430,7 +3591,7 @@ async function testShopify() {
 
 // ─── Migración principal ──────────────────────────────────────────────────────
 const PRODUCT_PAUSE_MS = 300;
-const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)', channels: 'solo canales de venta', coupons: 'solo vales (cupones)', orders: 'solo pedidos', giftcards: 'solo vales vendidos (tarjetas regalo)' };
+const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)', channels: 'solo canales de venta', coupons: 'solo vales (cupones)', orders: 'solo pedidos', giftcards: 'solo vales vendidos (tarjetas regalo)', valesindex: 'índice de vales' };
 
 // ─── Punto de reanudación ────────────────────────────────────────────────────
 // RESUME-PURE-BEGIN
@@ -3490,6 +3651,7 @@ async function startMigration(mode = 'full', resumeFrom = null) {
   const couponsOnly = mode === 'coupons';
   const ordersOnly = mode === 'orders';
   const giftCardsOnly = mode === 'giftcards';
+  const valeIndexOnly = mode === 'valesindex';
   shopifyLocationId = null;
   if (running) { log('Ya hay una sincronización en curso.', 'warn'); return; }
   const cfg = getConfig();
@@ -3525,6 +3687,14 @@ async function startMigration(mode = 'full', resumeFrom = null) {
     // Modo solo vales vendidos: los lee de WooCommerce por producto, sin tocar el catálogo.
     if (giftCardsOnly) {
       await syncGiftCards(cfg, signal);
+      setStatus('success', 'COMPLETADO');
+      return;
+    }
+
+    // Modo solo índice: no crea tarjetas, solo las apunta en metaobjetos y las enlaza
+    // con su cliente. Sirve para las 102 que ya están creadas.
+    if (valeIndexOnly) {
+      await syncValeIndex(cfg, signal);
       setStatus('success', 'COMPLETADO');
       return;
     }
