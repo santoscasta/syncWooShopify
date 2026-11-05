@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 const html = readFileSync(new URL('../woo-shopify-sync.html', import.meta.url), 'utf8');
 const m = html.match(/\/\/ ORDERS-PURE-BEGIN([\s\S]*?)\/\/ ORDERS-PURE-END/);
 assert.ok(m, 'No se encontró el bloque ORDERS-PURE en el HTML');
-const { wooNumberFromTags, compareOrders, planOrderImport, ordersSummary, ordersHeadline, shopifyOrdersCreatedMin, shopifyReadableFrom, WOO_ORDER_SKIP_STATUSES } =
-  new Function(`${m[1]}; return { wooNumberFromTags, compareOrders, planOrderImport, ordersSummary, ordersHeadline, shopifyOrdersCreatedMin, shopifyReadableFrom, WOO_ORDER_SKIP_STATUSES };`)();
+const { wooNumberFromTags, compareOrders, planOrderImport, orderTransactions, orderCustomer, wooOrderCustomerEmail, ordersSummary, ordersHeadline, shopifyOrdersCreatedMin, shopifyReadableFrom, WOO_ORDER_SKIP_STATUSES } =
+  new Function(`${m[1]}; return { wooNumberFromTags, compareOrders, planOrderImport, orderTransactions, orderCustomer, wooOrderCustomerEmail, ordersSummary, ordersHeadline, shopifyOrdersCreatedMin, shopifyReadableFrom, WOO_ORDER_SKIP_STATUSES };`)();
 
 const wooOrder = (number, date, extra = {}) => ({ number: String(number), date_created: date, status: 'completed', total: '10.00', ...extra });
 const shopifyOrder = (number, date, extra = {}) => ({ name: `#S${number}`, tags: `woo-import, woo-${number}`, created_at: date, total_price: '10.00', ...extra });
@@ -187,3 +187,33 @@ assert.deepEqual(
 assert.deepEqual(WOO_ORDER_SKIP_STATUSES, ['cancelled', 'refunded', 'failed']);
 
 console.log('orders-compare OK');
+
+// ── Cobro adjunto al crear el pedido ──
+assert.deepEqual(orderTransactions({ total: '25.50', payment_method_title: 'Tarjeta' }, 'paid'),
+  [{ kind: 'sale', status: 'success', amount: '25.50', gateway: 'Tarjeta' }]);
+assert.deepEqual(orderTransactions({ total: '25.50' }, 'pending'),
+  [{ kind: 'sale', status: 'pending', amount: '25.50', gateway: 'manual' }]);
+assert.deepEqual(orderTransactions({ total: '0.00', payment_method_title: 'Tarjeta' }, 'paid'), [],
+  'un pedido de 0 € (venta de vale) no lleva cobro');
+assert.deepEqual(orderTransactions({ total: '0' }, 'pending'), []);
+assert.deepEqual(orderTransactions({ total: '' }, 'paid'), [], 'sin total no se inventa un cobro');
+
+console.log('orders-compare: cobro de pedidos OK');
+
+// ── Cliente asociado al pedido ──
+const registered = { customer_id: 42, billing: { first_name: 'Ana', last_name: 'Ruiz', email: ' Ana@Ejemplo.es ' } };
+assert.equal(wooOrderCustomerEmail(registered), 'ana@ejemplo.es', 'el email se normaliza para buscar y cachear');
+assert.equal(wooOrderCustomerEmail({ customer_id: 0, billing: { email: 'x@y.es' } }), null, 'los invitados no tienen cliente asociado');
+assert.equal(wooOrderCustomerEmail({ customer_id: 42, billing: { email: '' } }), null, 'sin email no se puede identificar');
+assert.equal(wooOrderCustomerEmail({ customer_id: 42 }), null);
+
+assert.deepEqual(orderCustomer(registered, { status: 'found', id: 'gid://shopify/Customer/7788' }), { id: 7788 },
+  'si ya existe en Shopify se enlaza por id');
+assert.deepEqual(orderCustomer(registered, { status: 'none' }), { first_name: 'Ana', last_name: 'Ruiz', email: 'ana@ejemplo.es' },
+  'si no existe, Shopify lo crea con el pedido');
+assert.equal(orderCustomer(registered, { status: 'unknown' }), null,
+  'sin poder comprobar (permiso o varios clientes con ese email) no se crea otro: podría duplicarlo');
+assert.equal(orderCustomer({ customer_id: 0, billing: { email: 'x@y.es' } }, { status: 'found', id: 'gid://shopify/Customer/1' }), null);
+assert.equal(orderCustomer(registered, { status: 'found', id: 'gid://shopify/Customer/abc' }), null, 'un id raro no se manda');
+
+console.log('orders-compare: cliente de pedidos OK');

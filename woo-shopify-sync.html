@@ -2597,6 +2597,42 @@ function planOrderImport(wooOrders, shopifyOrders, { readableFrom = null } = {})
   };
 }
 
+// Email del cliente registrado en Woo que hizo el pedido. Los invitados (customer_id 0) no tienen
+// ficha de cliente, así que no se les asocia ninguno.
+function wooOrderCustomerEmail(wo) {
+  if (!(Number(wo.customer_id) > 0)) return null;
+  const email = String(wo.billing?.email || '').trim().toLowerCase();
+  return email || null;
+}
+
+// Cliente que se manda con el pedido. lookup: { status: 'found', id } si ya existe en Shopify,
+// { status: 'none' } si no existe (Shopify lo crea con el pedido) o { status: 'unknown' } si no se
+// pudo comprobar: entonces no se manda nada, porque crearlo podría duplicar uno que ya estaba.
+function orderCustomer(wo, lookup) {
+  const email = wooOrderCustomerEmail(wo);
+  if (!email) return null;
+  if (lookup?.status === 'found') {
+    const id = Number(String(lookup.id).split('/').pop());
+    return Number.isInteger(id) && id > 0 ? { id } : null;
+  }
+  if (lookup?.status === 'none') {
+    return { first_name: wo.billing?.first_name || '', last_name: wo.billing?.last_name || '', email };
+  }
+  return null;
+}
+
+// Cobro que acompaña al pedido al crearlo. Los de 0 € (las ventas de vales) van sin cobro:
+// un cobro de 0 € no aporta nada y Shopify puede rechazarlo; sin cobro, el pedido toma el estado de pago indicado.
+function orderTransactions(wo, financialStatus) {
+  if (!(orderCents(wo.total) > 0)) return [];
+  return [{
+    kind: 'sale',
+    status: financialStatus === 'paid' ? 'success' : 'pending',
+    amount: wo.total,
+    gateway: wo.payment_method_title || 'manual',
+  }];
+}
+
 function compareOrders(wooOrders, shopifyOrders, { since = null, readableFrom = null } = {}) {
   const copiesByNumber = shopifyCopiesByNumber(shopifyOrders);
 
@@ -2678,6 +2714,32 @@ async function getWooOrders(cfg, signal, extraParams = {}) {
   return all;
 }
 
+// Cliente de Shopify para un email, buscado una sola vez por ejecución. Los que se crean con un
+// pedido se apuntan en la caché con su id: el buscador de Shopify tarda en verlos y, si se volviera
+// a buscar, el siguiente pedido del mismo cliente lo crearía otra vez.
+async function lookupOrderCustomer(cfg, email, ctx, signal) {
+  if (ctx.cache.has(email)) return ctx.cache.get(email);
+  if (ctx.unavailable) return { status: 'unknown' };
+  let result;
+  try {
+    const query = encodeURIComponent(`email:${email}`);
+    const data = await shopifyRequest(cfg, 'GET', `customers/search.json?query=${query}&fields=id,email&limit=10`, null, signal);
+    // La búsqueda no es exacta: solo cuenta el que tiene justo ese email.
+    const matches = (data.customers || []).filter(c => String(c.email || '').trim().toLowerCase() === email);
+    result = matches.length === 1 ? { status: 'found', id: matches[0].id }
+      : matches.length === 0 ? { status: 'none' }
+      : { status: 'unknown' };
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    // Sin permiso para leer clientes falla igual para todos: se avisa una vez y no se insiste.
+    ctx.unavailable = true;
+    log(`Los pedidos se crean sin cliente asociado: no se pudieron buscar los clientes en Shopify (${e.message})`, 'warn');
+    return { status: 'unknown' };
+  }
+  ctx.cache.set(email, result);
+  return result;
+}
+
 async function syncOrders(cfg, signal) {
   log('=== Sincronizando pedidos ===', 'info');
 
@@ -2727,6 +2789,7 @@ async function syncOrders(cfg, signal) {
 
   // 4. Crear en Shopify los que faltan
   let okCount = 0, errCount = 0;
+  const customerCtx = { cache: new Map(), unavailable: false };
   const statusMap = {
     'processing': 'unfulfilled', 'completed': 'fulfilled', 'on-hold': 'unfulfilled',
     'pending': 'unfulfilled', 'cancelled': null, 'refunded': null, 'failed': null,
@@ -2760,12 +2823,7 @@ async function syncOrders(cfg, signal) {
           tags: `woo-import,woo-${wo.number}`,
           currency: wo.currency || 'EUR',
           total_tax: wo.total_tax || '0',
-          transactions: [{
-            kind: 'sale',
-            status: financialStatus === 'paid' ? 'success' : 'pending',
-            amount: wo.total,
-            gateway: wo.payment_method_title || 'manual',
-          }],
+          transactions: orderTransactions(wo, financialStatus),
         }
       };
 
@@ -2798,8 +2856,16 @@ async function syncOrders(cfg, signal) {
         }));
       }
 
-      await shopifyRequest(cfg, 'POST', 'orders.json', order, signal);
-      log(`+ Pedido #${wo.number} creado (${wo.billing?.first_name} ${wo.billing?.last_name})`, 'ok');
+      // Cliente registrado en Woo: se enlaza con su ficha de Shopify, o Shopify la crea si no existe.
+      const customerEmail = wooOrderCustomerEmail(wo);
+      const customer = customerEmail ? orderCustomer(wo, await lookupOrderCustomer(cfg, customerEmail, customerCtx, signal)) : null;
+      if (customer) order.order.customer = customer;
+
+      const created = await shopifyRequest(cfg, 'POST', 'orders.json', order, signal);
+      const createdCustomerId = created?.order?.customer?.id;
+      if (customerEmail && createdCustomerId) customerCtx.cache.set(customerEmail, { status: 'found', id: createdCustomerId });
+      const customerNote = customer ? (customer.id ? ' · cliente enlazado' : ' · cliente nuevo') : '';
+      log(`+ Pedido #${wo.number} creado (${wo.billing?.first_name} ${wo.billing?.last_name})${customerNote}`, 'ok');
       okCount++;
       await new Promise(r => setTimeout(r, 500));
 
