@@ -414,8 +414,17 @@
   .cmp-badge.diff { color: var(--warn); border-color: var(--warn); }
   .cmp-badge.woo_only { color: var(--accent); border-color: var(--accent); }
   .cmp-badge.shopify_only { color: var(--muted); border-color: var(--muted); }
+  .cmp-badge.imported { color: var(--success); border-color: var(--success); }
+  .cmp-badge.missing { color: var(--warn); border-color: var(--warn); }
+  .cmp-badge.duplicate { color: var(--error); border-color: var(--error); }
+  .cmp-badge.unverifiable { color: var(--accent); border-color: var(--accent); }
+  .cmp-badge.skipped { color: var(--muted); border-color: var(--muted); }
   .cmp-empty { padding: 24px; text-align: center; color: var(--muted); font-family: var(--mono); font-size: 12px; }
-  @media (max-width: 800px) { .cmp-filters { grid-template-columns: repeat(2, 1fr); } }
+  #ordFilters { grid-template-columns: repeat(6, 1fr); }
+  .ord-headline { border-left: 3px solid var(--muted); padding: 10px 14px; margin-bottom: 16px; font-size: 14px; line-height: 1.5; }
+  .ord-headline.ok { border-left-color: var(--success); color: var(--success); }
+  .ord-headline.warn { border-left-color: var(--warn); color: var(--warn); }
+  @media (max-width: 800px) { .cmp-filters, #ordFilters { grid-template-columns: repeat(2, 1fr); } }
 </style>
 </head>
 <body>
@@ -499,7 +508,13 @@
       <label class="check-item"><input type="checkbox" id="chk_orders"> Pedidos</label>
       <span class="check-item" title="Solo se importan los pedidos creados a partir de esta fecha. En blanco, todos (16.956 en WooCommerce)."><label for="ordersSince">↳ desde</label> <input type="date" id="ordersSince"></span>
       <label class="check-item" title="Crea en Shopify un código de descuento por cada cupón publicado de WooCommerce. Omite los que Shopify no puede expresar igual (exclusiones, importe máximo, por categoría) y los lista al final para hacerlos a mano."><input type="checkbox" id="chk_coupons"> Vales (cupones → descuentos)</label>
+      <label class="check-item" title="Crea una tarjeta regalo de Shopify por cada vale vendido que la tienda haya dado por vivo. Las tarjetas sí llevan saldo y registran solas en su cronología dónde se gastan."><input type="checkbox" id="chk_giftcards"> Vales vendidos → Tarjetas regalo</label>
       <label class="check-item" title="Al terminar la migración completa, borra en Shopify los productos que no estén publicados en WooCommerce."><input type="checkbox" id="chk_prune"> Eliminar en Shopify lo que no esté en WooCommerce</label>
+    </div>
+
+    <label for="valesConfirmados" style="font-weight:600;color:var(--accent2);margin-top:18px;margin-bottom:8px;">Vales confirmados por la tienda</label>
+    <div class="check-grid">
+      <textarea id="valesConfirmados" rows="4" style="width:100%;font-family:var(--mono,monospace);font-size:13px;" placeholder="Un vale vivo por línea: 23661&#10;Con importe corregido: 23661=12,50&#10;&#10;En blanco: solo simula, no crea ninguna tarjeta."></textarea>
     </div>
 
     <label style="margin-top:18px;">En caso de producto existente en Shopify</label>
@@ -581,7 +596,9 @@
       <button class="btn btn-secondary" onclick="startMigration('channels')" title="Solo publica los productos ya existentes en Shopify en Tienda online y/o Point of Sale según la visibilidad TPV de WooCommerce. No toca nada más.">🛒 Solo canales de venta</button>
       <button class="btn btn-secondary" onclick="startMigration('coupons')" title="Solo crea o actualiza en Shopify los códigos de descuento a partir de los cupones publicados de WooCommerce. No descarga el catálogo ni toca productos.">🎟 Solo vales (cupones)</button>
       <button class="btn btn-secondary" onclick="startMigration('orders')" title="Solo importa pedidos de WooCommerce, desde la fecha indicada en «Pedidos ↳ desde». No descarga el catálogo ni toca productos.">📦 Solo pedidos (desde fecha)</button>
+      <button class="btn btn-secondary" onclick="startMigration('giftcards')" title="Crea una tarjeta regalo por cada vale vendido de la lista confirmada. Con la lista vacía solo simula y no crea nada.">💳 Solo vales vendidos (tarjetas regalo)</button>
       <button class="btn btn-secondary" onclick="runComparison()">⇄ Comparar inventario</button>
+      <button class="btn btn-secondary" onclick="runOrdersComparison()" title="Comprueba si los pedidos de WooCommerce creados desde la fecha de «Pedidos ↳ desde» ya están en Shopify. Solo lee: no crea ni cambia nada.">⇄ Comparar pedidos (desde fecha)</button>
       <button class="btn btn-secondary" onclick="exportLog()">⬇ Exportar log</button>
     </div>
   </div>
@@ -624,6 +641,50 @@
     </div>
   </div>
 
+  <!-- Comparación de pedidos -->
+  <div class="panel full" id="ordPanel" style="display:none">
+    <div class="panel-title">Comparación de pedidos</div>
+    <div class="ord-headline" id="ordHeadline" role="status"></div>
+    <div class="cmp-filters" id="ordFilters">
+      <button class="cmp-filter" data-status="missing" onclick="setOrdFilter('missing')">
+        <div class="stat-val" style="color:var(--warn)">—</div>
+        <div class="stat-label">Faltan</div>
+      </button>
+      <button class="cmp-filter" data-status="imported" onclick="setOrdFilter('imported')">
+        <div class="stat-val" style="color:var(--success)">—</div>
+        <div class="stat-label">Importados</div>
+      </button>
+      <button class="cmp-filter" data-status="duplicate" onclick="setOrdFilter('duplicate')">
+        <div class="stat-val" style="color:var(--error)">—</div>
+        <div class="stat-label">Duplicados</div>
+      </button>
+      <button class="cmp-filter" data-status="unverifiable" onclick="setOrdFilter('unverifiable')" title="Pedidos con más de 60 días: sin el permiso read_all_orders, Shopify no los enseña aunque estén importados.">
+        <div class="stat-val" style="color:var(--accent)">—</div>
+        <div class="stat-label">Sin verificar</div>
+      </button>
+      <button class="cmp-filter" data-status="skipped" onclick="setOrdFilter('skipped')" title="Cancelados, reembolsados o fallidos: la importación no los crea.">
+        <div class="stat-val" style="color:var(--muted)">—</div>
+        <div class="stat-label">Omitidos</div>
+      </button>
+      <button class="cmp-filter" data-status="shopify_only" onclick="setOrdFilter('shopify_only')" title="Pedidos importados de WooCommerce cuyo número ya no aparece en WooCommerce en este periodo.">
+        <div class="stat-val" style="color:var(--muted)">—</div>
+        <div class="stat-label">Solo Shopify</div>
+      </button>
+    </div>
+    <div class="cmp-search">
+      <input type="search" id="ordSearch" aria-label="Buscar pedido" placeholder="Buscar por número de pedido…" oninput="renderOrdersComparison()" />
+    </div>
+    <div class="cmp-table-wrap">
+      <table class="cmp-table">
+        <thead>
+          <tr><th>Pedido Woo</th><th>WooCommerce</th><th>Shopify</th><th>Estado</th></tr>
+        </thead>
+        <tbody id="ordBody"></tbody>
+      </table>
+      <div class="cmp-empty" id="ordEmpty" style="display:none">Sin resultados para este filtro.</div>
+    </div>
+  </div>
+
   <!-- Log -->
   <div class="panel full">
     <div class="panel-title">Log en tiempo real</div>
@@ -637,7 +698,7 @@
 <script>
 // ─── Persistencia en localStorage ────────────────────────────────────────────
 function saveConfig() {
-  const fields = ['wooUrl','wooKey','wooSecret','shopifyUrl','shopifyClientId','shopifyToken','shopifyVersion','conflictMode','ordersSince'];
+  const fields = ['wooUrl','wooKey','wooSecret','shopifyUrl','shopifyClientId','shopifyToken','shopifyVersion','conflictMode','ordersSince','valesConfirmados'];
   const data = {};
   fields.forEach(id => { const el = document.getElementById(id); if (el) data[id] = el.value; });
   localStorage.setItem('woo-shopify-config', JSON.stringify(data));
@@ -739,6 +800,8 @@ function getConfig() {
     syncOrders: document.getElementById('chk_orders').checked,
     ordersSince: document.getElementById('ordersSince').value,
     syncCoupons: document.getElementById('chk_coupons').checked,
+    syncGiftCards: document.getElementById('chk_giftcards').checked,
+    valesConfirmados: document.getElementById('valesConfirmados').value,
     pruneOrphans: document.getElementById('chk_prune').checked,
   };
 }
@@ -934,8 +997,12 @@ async function getAllShopifyProducts(cfg, signal, fields = 'id,title,variants') 
 }
 
 async function getAllShopifyProductsRest(cfg, signal, fields) {
+  return getAllShopifyPages(cfg, signal, `products.json?limit=250&fields=${fields}`, 'products');
+}
+
+async function getAllShopifyPages(cfg, signal, firstPath, key) {
   const all = [];
-  let nextUrl = `https://${cfg.shopifyUrl}/admin/api/${cfg.shopifyVersion}/products.json?limit=250&fields=${fields}`;
+  let nextUrl = `https://${cfg.shopifyUrl}/admin/api/${cfg.shopifyVersion}/${firstPath}`;
   while (nextUrl) {
     const res = await proxiedFetch(nextUrl, { headers: { 'X-Shopify-Access-Token': cfg.shopifyToken, 'Content-Type': 'application/json' } }, signal);
     if (res.status === 429) {
@@ -946,7 +1013,7 @@ async function getAllShopifyProductsRest(cfg, signal, fields) {
     }
     if (!res.ok) throw new Error(`Shopify ${res.status}: ${await res.text()}`);
     const data = await res.json();
-    all.push(...(data.products || []));
+    all.push(...(data[key] || []));
     const linkHeader = res.headers.get('Link');
     nextUrl = linkHeader?.match(/<([^>]+)>; rel="next"/)?.[1] || null;
   }
@@ -1713,6 +1780,10 @@ const COUPON_UNSUPPORTED = [
   [(c) => (c.product_categories || []).length, 'se aplica por categoría (no hay colecciones en Shopify)'],
 ];
 
+// Un cupón cuyo código es un número de pedido no es un descuento: es un vale vendido, el
+// crédito de tienda que myminileo apuntaba así antes de usar las notas del pedido.
+const CUPON_ES_VALE = /^\d{4,6}$/;
+
 // Usos que le quedan al cupón. null = sin límite. Shopify no sabe de consumo previo,
 // así que se migra el RESTANTE, no el límite original.
 function couponRemainingUses(c) {
@@ -1726,6 +1797,13 @@ const couponMoney = (v) => (Math.round(Number(v) * 100) / 100).toFixed(2);
 function planCoupon(c, gidByWooId = new Map(), now = new Date()) {
   if (!c || !c.code) return { skip: 'sin código' };
   if (c.status && c.status !== 'publish') return { skip: `estado ${c.status}` };
+  // Los cupones cuyo código es un número de pedido son vales vendidos: crédito de tienda que
+  // la tienda apuntaba así antes de usar las notas del pedido. Migrarlos como descuento haría
+  // dos cosas mal: duplicaría el saldo (también se crea su tarjeta regalo) y dejaría un código
+  // de importe fijo sin límite de usos, que cualquiera podría reutilizar.
+  if (CUPON_ES_VALE.test(String(c.code).trim())) {
+    return { skip: 'es un vale vendido (crédito de tienda): se migra como tarjeta regalo' };
+  }
 
   const amount = Number(c.amount) || 0;
   const freeShippingOnly = c.free_shipping === true && amount === 0;
@@ -1873,29 +1951,602 @@ async function syncCoupons(cfg, signal) {
   if (manual.length) log(`Crear a mano en Shopify: ${manual.join(' · ')}`, 'warn');
 }
 
+// ─── Vales vendidos → Tarjetas regalo ────────────────────────────────────────
+// GIFTCARDS-PURE-BEGIN
+// Los vales vendidos de myminileo no son cupones: son crédito de tienda que se vendió como
+// un producto a 0,00 € con el importe escrito a mano en la nota de una línea del pedido.
+// En Shopify se migran a tarjetas regalo, que sí llevan saldo y registran ellas solas en su
+// cronología dónde se gastan; aquí solo se escribe de dónde viene cada una.
+const VALE_PRODUCT_IDS = [27100, 30722];   // VALE y TARJETA REGALO en WooCommerce
+const VALE_TARJETA_ID = 30722;             // la tarjeta regalo sí lleva el importe en la línea
+const VALE_NOTE_KEY = 'note';              // meta de línea: "Nota del artículo"
+const VALE_NOTAS_EN_PARALELO = 4;          // el proxy abre 4 sockets por host
+
+// Shopify exige códigos de 8 a 20 caracteres, solo a-z y 0-9.
+function giftCardCode(numeroPedido) {
+  return `vale${String(numeroPedido).padStart(4, '0')}`;
+}
+
+// La nota no siempre está en la línea del vale: puede estar en cualquier línea del pedido
+// (el 23229 la tiene en una línea "Otro articulo"). Ningún pedido tiene nota en dos líneas.
+function notaDelPedido(wooOrder) {
+  for (const li of wooOrder.line_items || []) {
+    const nota = (li.meta_data || []).find((m) => m.key === VALE_NOTE_KEY)?.value;
+    if (nota) return String(nota).trim();
+  }
+  return '';
+}
+
+// El importe se escribió a mano y sin formato fijo: "VALE POR 23,50EUROS", "VALE DE 1,5 SIN
+// CADUCIDAD", "VALE POR 0,50CENTIMOS", "VALE POR 17´50EUROS". Se prefiere la cifra que lleva
+// unidad detrás; si no la hay, la primera con decimales. Nunca una de 4+ dígitos: esas son
+// números de pedido.
+function importeDeNota(nota) {
+  if (!nota) return null;
+  const txt = String(nota).replace(/´/g, ',');
+  const conUnidad = txt.match(/(?<!\d)(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:EUROS?|€|CENTIMOS?)/i);
+  const conDecimales = txt.match(/(?<!\d)(\d{1,3}[.,]\d{1,2})(?!\d)/);
+  const bruto = (conUnidad || conDecimales)?.[1];
+  if (!bruto) return null;
+  const valor = Number(bruto.replace(',', '.'));
+  return Number.isFinite(valor) && valor > 0 ? valor : null;
+}
+
+// Números de pedido citados en la nota ("DEL RESTO DEL VALE 21218").
+function refsDeNota(nota) {
+  return [...String(nota || '').matchAll(/\b\d{5}\b/g)].map((m) => Number(m[0]));
+}
+
+// El importe está en la línea cuando el vale se cobró de verdad: las tarjetas regalo y algún
+// vale suelto como el 13931. En el resto el pedido va a 0,00 € y solo queda la nota.
+function importeDelVale(wooOrder) {
+  const enLinea = (wooOrder.line_items || [])
+    .filter((li) => VALE_PRODUCT_IDS.includes(li.product_id))
+    .reduce((suma, li) => suma + (Number(li.total) || 0), 0);
+  if (enLinea > 0) return { importe: enLinea, origen: 'línea del pedido' };
+  const importe = importeDeNota(notaDelPedido(wooOrder));
+  return importe != null ? { importe, origen: 'nota' } : { importe: null, origen: null };
+}
+
+// Un vale queda muerto cuando otro posterior cita su número como origen de su resto: es el
+// único rastro de consumo que hay en WooCommerce. Las notas citan con VALE, TICKET, PEDIDO,
+// ANTERIOR, RESTO, UNION o SOBRANTE, así que basta con el número; lo que acota el falso
+// positivo es exigir que el número citado sea a su vez un vale anterior.
+function cadenasDeVales(vales) {
+  const numeros = new Set(vales.map((v) => v.numero));
+  const gastadoPor = new Map();
+  const procedeDe = new Map();
+  for (const v of vales) {
+    for (const ref of refsDeNota(v.nota)) {
+      if (ref === v.numero || ref >= v.numero || !numeros.has(ref)) continue;
+      gastadoPor.set(ref, [...(gastadoPor.get(ref) || []), v.numero]);
+      procedeDe.set(v.numero, [...(procedeDe.get(v.numero) || []), ref]);
+    }
+  }
+  return { gastadoPor, procedeDe };
+}
+
+// El consumo del vale sí está escrito, pero en las NOTAS DEL PEDIDO de WooCommerce, no en la
+// nota del artículo: "vale usado en el pedido 21698", "canjeado el 11 de noviembre ticket
+// 13800", "le queda 1EURO para gastar". Son 145 de 253. Las notas llegan de más reciente a
+// más antigua, así que la primera que hable de saldo es la que manda.
+const NOTA_AUTOMATICA = /^(El estado del pedido|Niveles de inventario|Se ha enviado el correo|Stock levels|Order status|Pedido en espera|Pago|Awaiting|Se ha añadido|Se ha actualizado|Inventario del artículo)/i;
+const NOTA_ANULADO = /cancelad|no\s+sirve|se\s+anula|error\s+en\s+vale/i;
+const NOTA_USADO = /\b(usa|usad[oa]s?|consumid[oa]s?|canjead[oa]s?|gastad[oa]s?)\b|\bse\s+genera\s+nuevo\s+vale\s+con\s+el\s+resto\b|\bresto\s+vale\b|\bresto\s+del\s+vale\s+en\b/i;
+const NOTA_SALDO = /qued\w*\s*(?:le\s*)?(\d+(?:[.,]\d+)?)\s*(?:euro|€)/i;
+
+function notasEscritasAMano(notasPedido) {
+  return (notasPedido || []).map((n) => String(n.note || '').trim()).filter((t) => t && !NOTA_AUTOMATICA.test(t));
+}
+
+// Devuelve { estado: 'VIVO'|'USADO'|'PARCIAL'|'ANULADO', saldo, motivo }.
+function estadoSegunNotasPedido(notasPedido) {
+  const libres = notasEscritasAMano(notasPedido);
+  const texto = libres.join(' || ');
+  if (NOTA_ANULADO.test(texto)) return { estado: 'ANULADO', saldo: null, motivo: libres.find((t) => NOTA_ANULADO.test(t)) };
+  const conSaldo = libres.find((t) => NOTA_SALDO.test(t));
+  if (conSaldo) {
+    const saldo = Number(conSaldo.match(NOTA_SALDO)[1].replace(',', '.'));
+    return { estado: saldo > 0 ? 'PARCIAL' : 'USADO', saldo: saldo > 0 ? saldo : null, motivo: conSaldo };
+  }
+  if (NOTA_USADO.test(texto)) return { estado: 'USADO', saldo: null, motivo: libres.find((t) => NOTA_USADO.test(t)) };
+  return { estado: 'VIVO', saldo: null, motivo: null };
+}
+
+// Al principio la tienda no apuntaba nada en la nota del pedido: creaba un CUPÓN de
+// WooCommerce cuyo código es el número del pedido del vale (CUPON_ES_VALE, arriba), y el saldo
+// que iba quedando lo bajaba a mano en el campo «importe» de ese cupón. Son 10 cupones, y en 6
+// de ellos el pedido no dice una palabra del consumo, así que sin leerlos esos vales parecen
+// vivos. Regla: el importe del cupón ES el saldo vivo. La tienda lo pone a 0 o caduca el cupón
+// cuando se acaba; el texto de la descripción habla de gastos anteriores, no del saldo.
+function cuponesDeVales(cupones) {
+  const mapa = new Map();
+  for (const c of cupones || []) {
+    const code = String(c.code || '').trim();
+    if (CUPON_ES_VALE.test(code)) mapa.set(Number(code), c);
+  }
+  return mapa;
+}
+
+// Devuelve { estado, saldo, motivo } con la misma forma que estadoSegunNotasPedido.
+function estadoSegunCupon(cupon, ahora = new Date()) {
+  if (!cupon) return null;
+  const desc = String(cupon.description || '').trim();
+  const motivo = desc ? `cupón ${cupon.code}: "${desc}"` : `cupón ${cupon.code}`;
+  if (NOTA_ANULADO.test(desc)) return { estado: 'ANULADO', saldo: null, motivo };
+  const saldo = Number(cupon.amount);
+  if (!Number.isFinite(saldo) || saldo <= 0) return { estado: 'USADO', saldo: null, motivo: `${motivo} — saldo 0` };
+  // Solo el importe decide. Ni la fecha de caducidad ni la descripción: el 18954 y el 18955
+  // caducaron el 26.10.2025 y su descripción dice «usado», y la tienda confirma que están sin
+  // usar y con sus 50 €. El importe es el saldo que ella baja a mano y pone a 0 cuando se acaba
+  // (21041, 17873). Fiarse del texto o de la fecha daba por gastados dos vales que no lo están.
+  return { estado: 'VIVO', saldo, motivo };
+}
+
+// Dos fuentes para el mismo vale, la nota del pedido y el cupón, y ninguna de las dos está
+// completa. Gana la peor: cualquiera que diga «gastado» es una prueba escrita, y un saldo de
+// más es dinero regalado. Con saldo en las dos, manda el más bajo.
+function estadoCombinado(porNota, porCupon) {
+  const fuentes = [porNota, porCupon].filter(Boolean);
+  if (!fuentes.length) return { estado: 'VIVO', saldo: null, motivo: null };
+  const anulado = fuentes.find((f) => f.estado === 'ANULADO');
+  if (anulado) return anulado;
+  const usado = fuentes.find((f) => f.estado === 'USADO');
+  if (usado) return usado;
+  const conSaldo = fuentes.filter((f) => f.saldo != null).sort((a, b) => a.saldo - b.saldo);
+  return conSaldo[0] || fuentes[0];
+}
+
+// Cupones con código de pedido que no son ningún pedido de vale: crédito que la tienda dio
+// sin vender un vale. Con saldo vivo también es dinero que hay que migrar, y como código de
+// descuento serían 100 € reutilizables por cualquiera que sepa el código.
+function valesSoloEnCupon(cupones, numerosDeVales, ahora = new Date()) {
+  const vistos = new Set(numerosDeVales);
+  const out = [];
+  for (const [numero, cupon] of cuponesDeVales(cupones)) {
+    if (vistos.has(numero)) continue;
+    const estado = estadoSegunCupon(cupon, ahora);
+    if (estado?.estado !== 'VIVO' || !(estado.saldo > 0)) continue;
+    out.push({
+      numero,
+      fecha: String(cupon.date_created || '').slice(0, 10),
+      tipo: 'VALE (solo cupón)',
+      cliente: '',
+      email: '',
+      nota: String(cupon.description || '').trim(),
+      estadoNotas: null,
+      cupon,
+      importe: estado.saldo,
+      origen: `saldo del cupón ${cupon.code}`,
+    });
+  }
+  return out.sort((a, b) => a.numero - b.numero);
+}
+
+// Lista confirmada por la tienda: una línea por vale vivo, "23661" o "23661=12,50" cuando el
+// importe real no es el que dice la nota. Las líneas vacías y las que empiezan por # se
+// ignoran, para poder pegar la lista con comentarios.
+function parseConfirmados(texto) {
+  const mapa = new Map();
+  for (const linea of String(texto || '').split('\n')) {
+    // Se admite comentario al final de la línea para poder pegar la lista tal como se entrega,
+    // con el tipo y el cliente anotados detrás: "23661=1,00   # VALE · Maria Barrau".
+    const limpia = linea.split('#')[0].trim();
+    if (!limpia) continue;
+    const m = limpia.match(/^(\d+)\s*(?:[=:]\s*([\d.,]+))?$/);
+    if (!m) continue;
+    const importe = m[2] ? Number(m[2].replace(',', '.')) : null;
+    // «13055=0» es la tienda corrigiendo: ese vale está gastado. Sin distinguirlo, la línea se
+    // leería como «confirmado, sin importe» y el vale se migraría con el importe de su nota.
+    const gastado = Boolean(m[2]) && Number.isFinite(importe) && importe <= 0;
+    mapa.set(Number(m[1]), { importe: Number.isFinite(importe) && importe > 0 ? importe : null, gastado });
+  }
+  return mapa;
+}
+
+// Nota de la tarjeta en Shopify: de dónde sale el vale. Dónde se gasta lo escribe Shopify
+// sola en la cronología de la tarjeta, igual que en las que ya existen.
+function giftCardNote(vale) {
+  const partes = [`Vale de WooCommerce #${vale.numero}`, vale.fecha, vale.tipo];
+  if (vale.cliente) partes.push(vale.cliente);
+  if (vale.procedeDe?.length) partes.push(`procede del vale ${vale.procedeDe.join(' y ')}`);
+  if (vale.estadoNotas?.estado === 'PARCIAL') partes.push(`gastado en parte: ${vale.estadoNotas.motivo}`);
+  if (vale.cupon) partes.push(`tenía código de descuento ${vale.cupon.code} en WooCommerce`);
+  partes.push(`importe según ${vale.origen}`);
+  if (vale.importeConfirmado != null) partes.push('importe confirmado por la tienda');
+  if (vale.nota) partes.push(`nota original: "${vale.nota}"`);
+  return partes.join(' · ');
+}
+
+// Sin lista confirmada no se crea nada: un vale gastado al céntimo exacto no deja rastro en
+// WooCommerce y parece vivo, así que la estimación solo sirve para simular.
+function planGiftCard(vale, { confirmados = null, gastadoPor = new Map(), ahora = new Date() } = {}) {
+  const confirmado = confirmados?.get(vale.numero);
+  if (confirmados && !confirmado) return { skip: 'no está en la lista confirmada' };
+  if (confirmado?.gastado) return { skip: 'la tienda lo marca gastado en la lista confirmada' };
+  // La nota del pedido y el cupón son las dos únicas pruebas escritas de consumo: mandan
+  // sobre todo lo demás, incluso sobre la lista confirmada, salvo que la lista corrija el
+  // importe a mano.
+  const estado = estadoCombinado(vale.estadoNotas, estadoSegunCupon(vale.cupon, ahora));
+  if (estado.estado === 'ANULADO') return { skip: `anulado por la tienda: ${estado.motivo}` };
+  if (estado.estado === 'USADO' && !confirmado?.importe) return { skip: `usado: ${estado.motivo}` };
+  const importe = confirmado?.importe ?? estado.saldo ?? vale.importe;
+  if (importe == null) return { skip: 'sin importe legible' };
+  if (importe <= 0) return { skip: 'saldo 0' };
+  const gastado = gastadoPor.get(vale.numero);
+  if (!confirmados && gastado) return { skip: `gastado: su resto pasó al vale ${gastado.join(' y ')}` };
+  const importeConfirmado = confirmado?.importe ?? null;
+  return {
+    input: {
+      code: giftCardCode(vale.numero),
+      // GiftCardCreateInput pide un Decimal suelto, no un MoneyInput. La divisa es la de la tienda.
+      initialValue: importe.toFixed(2),
+      note: giftCardNote({ ...vale, importeConfirmado }),
+    },
+    // Los vales de myminileo no caducan, así que no se manda expiresOn.
+    aviso: gastado ? `la estimación lo daba por gastado (su resto pasó al vale ${gastado.join(' y ')})` : null,
+  };
+}
+// GIFTCARDS-PURE-END
+
+const GIFT_CARD_SEARCH = `query($q: String!) { giftCards(first: 10, query: $q) { nodes { id note } } }`;
+const GIFT_CARD_CREATE = `mutation($input: GiftCardCreateInput!) { giftCardCreate(input: $input) { giftCard { id } userErrors { field message } } }`;
+const CUSTOMER_SEARCH = `query($q: String!) { customers(first: 2, query: $q) { nodes { id } } }`;
+
+// Los pedidos de vales son los que llevan el producto VALE o TARJETA REGALO.
+async function getAllWooVales(cfg, signal) {
+  const porNumero = new Map();
+  for (const productId of VALE_PRODUCT_IDS) {
+    let page = 1;
+    while (true) {
+      const { data } = await wooRequest(cfg, 'orders', { product: productId, per_page: 100, page, status: 'any', orderby: 'date', order: 'asc' }, signal);
+      data.forEach((o) => porNumero.set(Number(o.number), o));
+      log(`WooCommerce: producto ${productId}, página ${page} — ${data.length} pedidos`, 'info');
+      if (data.length < 100) break;
+      page++;
+    }
+  }
+  const pedidos = [...porNumero.values()];
+
+  // Los cupones con código de número de pedido son la otra mitad de la historia: antes de
+  // apuntar el consumo en la nota del pedido, la tienda creaba un código de descuento y le
+  // bajaba el saldo a mano. Sin esto, 4 vales ya gastados parecen vivos y 2 saldos que solo
+  // viven en un cupón no se migrarían.
+  let cupones = [];
+  try {
+    cupones = await getAllWooCoupons(cfg, signal);
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    log(`Aviso: no se pudieron leer los cupones (${e.message}). Los vales que solo tienen saldo en su cupón saldrán mal.`, 'warn');
+  }
+  const cuponPorNumero = cuponesDeVales(cupones);
+  log(`Cupones de WooCommerce con código de pedido: ${cuponPorNumero.size}`, 'info');
+
+  // Las notas del pedido van en otro endpoint, una llamada por pedido. Es la parte lenta,
+  // pero sin ellas se importarían como vivos 145 vales de 253 que ya están gastados.
+  log(`Leyendo las notas de ${pedidos.length} pedidos (ahí es donde se apunta el consumo)...`, 'info');
+  const notasPorId = new Map();
+  for (let i = 0; i < pedidos.length; i += VALE_NOTAS_EN_PARALELO) {
+    if (signal?.aborted) break;
+    const lote = pedidos.slice(i, i + VALE_NOTAS_EN_PARALELO);
+    await Promise.all(lote.map(async (o) => {
+      try {
+        const { data } = await wooRequest(cfg, `orders/${o.id}/notes`, { per_page: 50 }, signal);
+        notasPorId.set(o.id, data || []);
+      } catch (e) {
+        if (e.name === 'AbortError') throw e;
+        log(`Aviso: no se pudieron leer las notas del pedido #${o.number} (${e.message}); se tratará como vivo`, 'warn');
+        notasPorId.set(o.id, []);
+      }
+    }));
+    updateProgress(Math.min(i + VALE_NOTAS_EN_PARALELO, pedidos.length), pedidos.length, 'Notas de pedido');
+  }
+
+  const deLosPedidos = pedidos.map((o) => {
+    const { importe, origen } = importeDelVale(o);
+    return {
+      numero: Number(o.number),
+      fecha: (o.date_created || '').slice(0, 10),
+      tipo: (o.line_items || []).some((li) => li.product_id === VALE_TARJETA_ID) ? 'TARJETA REGALO' : 'VALE',
+      cliente: [o.billing?.first_name, o.billing?.last_name].filter(Boolean).join(' ').trim(),
+      email: o.billing?.email || '',
+      nota: notaDelPedido(o),
+      estadoNotas: estadoSegunNotasPedido(notasPorId.get(o.id)),
+      cupon: cuponPorNumero.get(Number(o.number)) || null,
+      importe,
+      origen,
+    };
+  });
+
+  const huerfanos = valesSoloEnCupon(cupones, deLosPedidos.map((v) => v.numero));
+  if (huerfanos.length) {
+    log(`Saldo que solo existe en un cupón, sin pedido de vale detrás: ${huerfanos.map((v) => `${v.numero} (${v.importe} €)`).join(' · ')}`, 'warn');
+  }
+  return [...deLosPedidos, ...huerfanos].sort((a, b) => a.numero - b.numero);
+}
+
+// Reejecutable: el código de la tarjeta no se puede leer entero, pero la búsqueda por
+// defecto sí acepta el código, y la nota lleva el número de pedido para confirmar que es
+// la misma. Sin esta comprobación, repetir el paso duplicaría tarjetas con saldo.
+async function findShopifyGiftCard(cfg, vale, signal) {
+  const code = giftCardCode(vale.numero);
+  const data = await shopifyGraphQL(cfg, GIFT_CARD_SEARCH, { q: code }, signal);
+  const marca = `#${vale.numero}`;
+  return (data.giftCards?.nodes || []).find((g) => (g.note || '').includes(marca))?.id || null;
+}
+
+// Enlazar el cliente hace que la tarjeta salga también en su ficha. Sin email no hay forma
+// de identificarlo: muchos vales se vendieron en el TPV sin cliente.
+let avisoSinClientes = false;
+async function findShopifyCustomer(cfg, email, signal) {
+  if (!email) return null;
+  // Enlazar la tarjeta con su cliente es un extra. Shopify solo da read_customers a las apps
+  // con acceso a datos protegidos aprobado, y sin ese permiso esta consulta falla: que no se
+  // lleve por delante la creación de la tarjeta, que es lo que importa.
+  try {
+    const data = await shopifyGraphQL(cfg, CUSTOMER_SEARCH, { q: `email:${email}` }, signal);
+    const nodes = data.customers?.nodes || [];
+    return nodes.length === 1 ? nodes[0].id : null;
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    if (!avisoSinClientes) {
+      avisoSinClientes = true;
+      log(`Las tarjetas se crean sin enlazar a su cliente: la app no tiene permiso para leer clientes (${e.message})`, 'warn');
+    }
+    return null;
+  }
+}
+
+async function syncGiftCards(cfg, signal) {
+  log('=== Migrando vales vendidos a tarjetas regalo ===', 'info');
+  const confirmados = cfg.valesConfirmados?.trim() ? parseConfirmados(cfg.valesConfirmados) : null;
+  if (confirmados) {
+    log(`Lista confirmada por la tienda: ${confirmados.size} vales vivos`, 'ok');
+  } else {
+    log('SIMULACIÓN: sin lista confirmada no se crea ninguna tarjeta. Pega en «Vales confirmados» los números que la tienda haya dado por vivos.', 'warn');
+  }
+
+  const vales = await getAllWooVales(cfg, signal);
+  log(`Total vales vendidos en WooCommerce: ${vales.length}`, 'ok');
+  if (!vales.length) return;
+  const { gastadoPor, procedeDe } = cadenasDeVales(vales);
+
+  let creadas = 0, existentes = 0, simuladas = 0, errores = 0;
+  const omitidos = [];
+  for (let i = 0; i < vales.length; i++) {
+    if (signal?.aborted) { log('Migración de vales cancelada.', 'warn'); break; }
+    const vale = { ...vales[i], procedeDe: procedeDe.get(vales[i].numero) || [] };
+    updateProgress(i + 1, vales.length, `Vale #${vale.numero}`);
+
+    const plan = planGiftCard(vale, { confirmados, gastadoPor });
+    if (plan.skip) {
+      omitidos.push(`#${vale.numero} (${plan.skip})`);
+      continue;
+    }
+    const resumen = `${plan.input.code} — ${plan.input.initialValue} € · ${vale.tipo}${vale.cliente ? ` · ${vale.cliente}` : ''}`;
+    if (!confirmados) {
+      log(`· (simulado) ${resumen}`, 'info');
+      simuladas++;
+      continue;
+    }
+    try {
+      const existente = await findShopifyGiftCard(cfg, vale, signal);
+      if (existente) {
+        log(`= ${resumen} — ya existía, no se toca`, 'info');
+        existentes++;
+        continue;
+      }
+      const customerId = await findShopifyCustomer(cfg, vale.email, signal);
+      const input = customerId ? { ...plan.input, customerId } : plan.input;
+      const data = await shopifyGraphQL(cfg, GIFT_CARD_CREATE, { input }, signal);
+      throwUserErrors(`Vale #${vale.numero}`, data.giftCardCreate?.userErrors);
+      log(`+ ${resumen}${customerId ? ' · enlazada a su cliente' : ''}`, 'ok');
+      if (plan.aviso) log(`  ⚠ #${vale.numero}: ${plan.aviso}`, 'warn');
+      creadas++;
+    } catch (e) {
+      log(`✗ Vale #${vale.numero}: ${e.message}`, 'err');
+      errores++;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  const cuenta = vales.reduce((acc, v) => {
+    const e = estadoCombinado(v.estadoNotas, estadoSegunCupon(v.cupon)).estado;
+    acc[e] = (acc[e] || 0) + 1;
+    return acc;
+  }, {});
+  log(`Entre notas de pedido y cupones: ${cuenta.USADO || 0} usados · ${cuenta.ANULADO || 0} anulados · ${cuenta.PARCIAL || 0} con saldo parcial · ${cuenta.VIVO || 0} sin señal de consumo`, 'info');
+  const corregidos = vales.filter((v) => v.cupon && v.estadoNotas && estadoCombinado(v.estadoNotas, estadoSegunCupon(v.cupon)).estado !== v.estadoNotas.estado);
+  if (corregidos.length) {
+    log(`Corregidos por su cupón (el pedido no lo decía): ${corregidos.map((v) => `#${v.numero}`).join(' · ')}`, 'warn');
+  }
+  const hechas = confirmados ? `${creadas} creadas · ${existentes} ya existían` : `${simuladas} se crearían`;
+  log(`=== Vales: ${hechas} · ${omitidos.length} omitidos · ${errores} errores ===`, errores ? 'warn' : 'ok');
+  if (omitidos.length) log(`Omitidos: ${omitidos.join(' · ')}`, 'info');
+}
+
 // ─── Pedidos ──────────────────────────────────────────────────────────────────
-async function syncOrders(cfg, signal) {
-  log('=== Sincronizando pedidos ===', 'info');
+// ORDERS-PURE-BEGIN
+const WOO_ORDER_SKIP_STATUSES = ['cancelled', 'refunded', 'failed'];
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Sin el permiso read_all_orders, la API de Shopify solo devuelve los pedidos de los últimos 60 días.
+const SHOPIFY_ORDERS_VISIBLE_DAYS = 60;
+const ORDER_STATUS_RANK = { duplicate: 0, missing: 1, unverifiable: 2, shopify_only: 3, imported: 4, skipped: 5 };
 
-  // 1. Obtener pedidos de WooCommerce. `after` filtra en el servidor: sin él se bajarían
-  // los 16.956 pedidos para descartar casi todos.
-  const since = cfg.ordersSince ? `${cfg.ordersSince}T00:00:00` : null;
-  log(since ? `Solo pedidos creados desde ${cfg.ordersSince}` : 'Sin fecha de inicio: se importan todos los pedidos', since ? 'info' : 'warn');
+// syncOrders etiqueta cada pedido con "woo-import,woo-<número>".
+function wooNumberFromTags(tags) {
+  const tag = String(tags || '').split(',').map(t => t.trim().toLowerCase())
+    .find(t => t.startsWith('woo-') && t !== 'woo-import');
+  return tag ? tag.slice('woo-'.length) : null;
+}
 
-  let wooOrders = [];
+// Woo filtra `after` en su hora local y Shopify guarda otra zona: se pide un día de más para no
+// perder los pedidos del borde.
+function shopifyOrdersCreatedMin(since) {
+  if (!since) return null;
+  return new Date(Date.parse(`${since}T00:00:00Z`) - DAY_MS).toISOString().replace('.000Z', 'Z');
+}
+
+// Fecha a partir de la cual Shopify enseña pedidos, o null si los enseña todos.
+function shopifyReadableFrom(scopeHandles, now = new Date()) {
+  if (scopeHandles?.includes('read_all_orders')) return null;
+  return new Date(now.getTime() - SHOPIFY_ORDERS_VISIBLE_DAYS * DAY_MS).toISOString();
+}
+
+const orderCents = (v) => Math.round(Number(v) * 100);
+
+function shopifyOrderSide(copies) {
+  return {
+    name: copies.map(o => o.name).join(', '),
+    date: copies[0].created_at,
+    total: copies[0].total_price,
+    count: copies.length,
+  };
+}
+
+function wooOrderRowStatus(wo, copies, readableFrom) {
+  if (copies.length > 1) return 'duplicate';
+  if (copies.length === 1) return 'imported';
+  if (WOO_ORDER_SKIP_STATUSES.includes(wo.status)) return 'skipped';
+  // Fuera de lo que Shopify deja leer, no aparecer no demuestra que falte.
+  if (readableFrom && Date.parse(wo.date_created) < Date.parse(readableFrom)) return 'unverifiable';
+  return 'missing';
+}
+
+// Empareja por la etiqueta woo-<número>. Los pedidos de Shopify sin ella son ventas propias y no cuentan.
+function shopifyCopiesByNumber(shopifyOrders) {
+  const copiesByNumber = new Map();
+  shopifyOrders.forEach(o => {
+    const number = wooNumberFromTags(o.tags);
+    if (number !== null) copiesByNumber.set(number, [...(copiesByNumber.get(number) || []), o]);
+  });
+  return copiesByNumber;
+}
+
+// Qué hacer con cada pedido de Woo al importar. Lo que no se puede comprobar no se crea: un
+// pedido de menos se ve en la comparación, uno repetido hay que buscarlo y borrarlo a mano.
+function planOrderImport(wooOrders, shopifyOrders, { readableFrom = null } = {}) {
+  const copiesByNumber = shopifyCopiesByNumber(shopifyOrders);
+  const byStatus = (status) => wooOrders.filter(wo => wooOrderRowStatus(wo, copiesByNumber.get(String(wo.number).toLowerCase()) || [], readableFrom) === status);
+  return {
+    toCreate: byStatus('missing'),
+    alreadyImported: byStatus('imported').length + byStatus('duplicate').length,
+    skipped: byStatus('skipped').length,
+    unverifiable: byStatus('unverifiable'),
+  };
+}
+
+function compareOrders(wooOrders, shopifyOrders, { since = null, readableFrom = null } = {}) {
+  const copiesByNumber = shopifyCopiesByNumber(shopifyOrders);
+
+  const wooKeys = new Set(wooOrders.map(wo => String(wo.number).toLowerCase()));
+  const wooRows = wooOrders.map(wo => {
+    const copies = copiesByNumber.get(String(wo.number).toLowerCase()) || [];
+    return {
+      number: String(wo.number),
+      status: wooOrderRowStatus(wo, copies, readableFrom),
+      woo: { date: wo.date_created, total: wo.total, status: wo.status },
+      shopify: copies.length ? shopifyOrderSide(copies) : null,
+      totalDiff: copies.length > 0 && orderCents(wo.total) !== orderCents(copies[0].total_price),
+    };
+  });
+
+  // Durante el primer día tras la fecha no se puede saber si un pedido cae dentro o fuera del
+  // filtro de Woo por la zona horaria: solo se señala lo que queda claramente dentro.
+  const clearlyInside = (o) => !since || Date.parse(o.created_at) >= Date.parse(`${since}T00:00:00Z`) + DAY_MS;
+  const shopifyOnlyRows = [...copiesByNumber]
+    .filter(([number, copies]) => !wooKeys.has(number) && copies.some(clearlyInside))
+    .map(([number, copies]) => ({ number, status: 'shopify_only', woo: null, shopify: shopifyOrderSide(copies), totalDiff: false }));
+
+  const rowDate = (r) => Date.parse(r.woo?.date ?? r.shopify.date);
+  return [...wooRows, ...shopifyOnlyRows]
+    .sort((a, b) => (ORDER_STATUS_RANK[a.status] - ORDER_STATUS_RANK[b.status]) || (rowDate(a) - rowDate(b)));
+}
+
+function ordersSummary(rows) {
+  const counts = { imported: 0, missing: 0, duplicate: 0, unverifiable: 0, skipped: 0, shopify_only: 0 };
+  rows.forEach(r => { counts[r.status]++; });
+  const latest = (dates) => dates.reduce((max, d) => (max === null || Date.parse(d) > Date.parse(max) ? d : max), null);
+  const wooDates = (list) => list.filter(r => r.woo).map(r => r.woo.date);
+  return {
+    counts,
+    wooTotal: rows.filter(r => r.woo).length,
+    complete: counts.missing === 0 && counts.unverifiable === 0,
+    firstMissing: rows.find(r => r.status === 'missing') || null,
+    lastImportedDate: latest(wooDates(rows.filter(r => r.status === 'imported' || r.status === 'duplicate'))),
+    lastWooDate: latest(wooDates(rows)),
+    totalDiffs: rows.filter(r => r.totalDiff).length,
+  };
+}
+
+const fmtOrderDate = (d) => (d ? String(d).slice(0, 16).replace('T', ' ') : '—');
+
+function ordersHeadline(summary) {
+  const { counts, wooTotal, firstMissing, lastImportedDate } = summary;
+  if (wooTotal === 0) return { level: 'info', text: 'WooCommerce no tiene pedidos en este periodo: no hay nada que comprobar.' };
+
+  const duplicates = counts.duplicate ? ` Ojo: ${counts.duplicate} duplicado${counts.duplicate === 1 ? '' : 's'} en Shopify.` : '';
+  const lastImported = lastImportedDate ? ` Último importado: ${fmtOrderDate(lastImportedDate)}.` : '';
+  const unverifiable = `${counts.unverifiable} pedido${counts.unverifiable === 1 ? '' : 's'} con más de ${SHOPIFY_ORDERS_VISIBLE_DAYS} días que Shopify no deja leer sin el permiso read_all_orders`;
+
+  if (counts.missing) {
+    const missing = counts.missing === 1 ? 'falta 1 pedido' : `faltan ${counts.missing} pedidos`;
+    const also = counts.unverifiable ? ` Además, ${unverifiable}.` : '';
+    return { level: 'warn', text: `Sin terminar: ${missing} en Shopify. El primero es el #${firstMissing.number} (${fmtOrderDate(firstMissing.woo.date)}).${lastImported}${also}${duplicates}` };
+  }
+  if (counts.unverifiable) return { level: 'warn', text: `No se puede confirmar: ${unverifiable}.${lastImported}${duplicates}` };
+
+  const present = counts.imported + counts.duplicate;
+  return { level: duplicates ? 'warn' : 'ok', text: `Sincronización terminada: ${present} de ${present} pedidos importables están en Shopify.${lastImported}${duplicates}` };
+}
+// ORDERS-PURE-END
+
+// `after` filtra en el servidor: sin él se bajarían los 16.956 pedidos para descartar casi todos.
+async function getWooOrders(cfg, signal, extraParams = {}) {
+  const baseParams = { per_page: 100, orderby: 'date', order: 'asc', ...extraParams };
+  if (cfg.ordersSince) baseParams.after = `${cfg.ordersSince}T00:00:00`;
+  let all = [];
   let page = 1;
   while (true) {
-    const params = { per_page: 100, page, orderby: 'date', order: 'asc' };
-    if (since) params.after = since;
-    const { data } = await wooRequest(cfg, 'orders', params, signal);
-    wooOrders = wooOrders.concat(data);
+    const { data } = await wooRequest(cfg, 'orders', { ...baseParams, page }, signal);
+    all = all.concat(data);
     log(`WooCommerce: página ${page} — ${data.length} pedidos`, 'info');
     if (data.length < 100) break;
     page++;
   }
-  log(`Total pedidos WooCommerce: ${wooOrders.length}`, 'ok');
+  return all;
+}
 
-  // 2. Mapear productos por SKU para obtener variant_id en Shopify
+async function syncOrders(cfg, signal) {
+  log('=== Sincronizando pedidos ===', 'info');
+
+  // 1. Obtener pedidos de WooCommerce
+  log(cfg.ordersSince ? `Solo pedidos creados desde ${cfg.ordersSince}` : 'Sin fecha de inicio: se importan todos los pedidos', cfg.ordersSince ? 'info' : 'warn');
+  const allWooOrders = await getWooOrders(cfg, signal);
+  log(`Total pedidos WooCommerce: ${allWooOrders.length}`, 'ok');
+
+  // 2. Ver cuáles están ya en Shopify. Si no se puede leer, no se crea nada: importar a ciegas
+  // duplicaría los que ya estaban (también en cada ciclo de la sincronización automática).
+  let plan;
+  try {
+    const readableFrom = shopifyReadableFrom(await getShopifyScopes(cfg, signal));
+    plan = planOrderImport(allWooOrders, await getShopifyOrders(cfg, signal), { readableFrom });
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    log(`✗ No se pudieron leer los pedidos de Shopify (${e.message}); no se importa ninguno para no duplicarlos`, 'err');
+    return false;
+  }
+  const wooOrders = plan.toCreate;
+  log(`Pedidos: ${wooOrders.length} por crear · ${plan.alreadyImported} ya en Shopify · ${plan.skipped} omitidos (cancelados, reembolsados o fallidos)`, 'info');
+  if (plan.unverifiable.length) {
+    log(`Pedidos con más de ${SHOPIFY_ORDERS_VISIBLE_DAYS} días que no se crean: ${plan.unverifiable.length}. Sin el permiso read_all_orders, Shopify no deja comprobar si ya están y se podrían duplicar`, 'warn');
+  }
+  if (!wooOrders.length) {
+    log('=== Pedidos: nada que crear ===', 'ok');
+    return true;
+  }
+
+  // 3. Mapear productos por SKU para obtener variant_id en Shopify
   let shopifyVariants = {};
   try {
     let nextUrl = `https://${cfg.shopifyUrl}/admin/api/${cfg.shopifyVersion}/products.json?limit=250&fields=id,variants,title`;
@@ -1913,7 +2564,7 @@ async function syncOrders(cfg, signal) {
     }
   } catch (e) { log(`Aviso: no se pudo indexar productos Shopify: ${e.message}`, 'warn'); }
 
-  // 3. Crear pedidos en Shopify
+  // 4. Crear en Shopify los que faltan
   let okCount = 0, errCount = 0;
   const statusMap = {
     'processing': 'unfulfilled', 'completed': 'fulfilled', 'on-hold': 'unfulfilled',
@@ -1924,12 +2575,6 @@ async function syncOrders(cfg, signal) {
     if (signal?.aborted) break;
     const wo = wooOrders[i];
     updateProgress(i + 1, wooOrders.length, `Pedido #${wo.number}`);
-
-    // Saltar cancelados/reembolsados
-    if (['cancelled', 'refunded', 'failed'].includes(wo.status)) {
-      log(`↷ Pedido #${wo.number} omitido (${wo.status})`, 'warn');
-      continue;
-    }
 
     try {
       // Mapear line items
@@ -2003,7 +2648,8 @@ async function syncOrders(cfg, signal) {
     }
   }
 
-  log(`=== Pedidos: ${okCount} creados, ${errCount} errores ===`, 'ok');
+  log(`=== Pedidos: ${okCount} creados, ${errCount} errores, ${plan.alreadyImported} ya estaban ===`, 'ok');
+  return true;
 }
 
 // ─── Shopify OAuth ────────────────────────────────────────────────────────────
@@ -2564,6 +3210,131 @@ function setCmpFilter(status) {
   renderComparison();
 }
 
+// ─── Comparación de pedidos ──────────────────────────────────────────────────
+let ordRows = [];
+let ordFilter = null;
+
+// Permisos concedidos al token, o null si no se pudieron leer.
+async function getShopifyScopes(cfg, signal) {
+  try {
+    const res = await proxiedFetch(`https://${cfg.shopifyUrl}/admin/oauth/access_scopes.json`, { headers: { 'X-Shopify-Access-Token': cfg.shopifyToken } }, signal);
+    if (!res.ok) throw new Error(`Shopify ${res.status}`);
+    const data = await res.json();
+    return (data.access_scopes || []).map(s => s.handle);
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    log(`Aviso: no se pudieron leer los permisos de Shopify (${e.message}); se asume el límite de ${SHOPIFY_ORDERS_VISIBLE_DAYS} días`, 'warn');
+    return null;
+  }
+}
+
+function getShopifyOrders(cfg, signal) {
+  const createdMin = shopifyOrdersCreatedMin(cfg.ordersSince);
+  const dateFilter = createdMin ? `&created_at_min=${encodeURIComponent(createdMin)}` : '';
+  return getAllShopifyPages(cfg, signal, `orders.json?status=any&limit=250&fields=id,name,tags,created_at,total_price${dateFilter}`, 'orders');
+}
+
+// Solo lectura: no crea ni modifica pedidos en ninguna de las dos tiendas.
+async function runOrdersComparison() {
+  if (running) { log('Ya hay una operación en curso.', 'warn'); return; }
+  const cfg = getConfig();
+  if (!validate(cfg)) return;
+
+  running = true;
+  abortController = new AbortController();
+  setStatus('running', 'COMPARANDO');
+  document.getElementById('startBtn').disabled = true;
+  log('=== Inicio comparación de pedidos ===', 'info');
+  log(cfg.ordersSince ? `Pedidos creados desde ${cfg.ordersSince}` : 'Sin fecha de inicio: se comparan todos los pedidos', cfg.ordersSince ? 'info' : 'warn');
+
+  try {
+    const signal = abortController.signal;
+    const wooOrders = await getWooOrders(cfg, signal, { _fields: 'number,status,total,date_created' });
+    log(`WooCommerce: ${wooOrders.length} pedidos`, 'ok');
+    const readableFrom = shopifyReadableFrom(await getShopifyScopes(cfg, signal));
+    const shopifyOrders = await getShopifyOrders(cfg, signal);
+    log(`Shopify: ${shopifyOrders.length} pedidos en el periodo`, 'ok');
+
+    ordRows = compareOrders(wooOrders, shopifyOrders, { since: cfg.ordersSince || null, readableFrom });
+    ordFilter = null;
+    const summary = ordersSummary(ordRows);
+    const headline = ordersHeadline(summary);
+    const c = summary.counts;
+    log(`=== Pedidos: importados ${c.imported} · faltan ${c.missing} · duplicados ${c.duplicate} · sin verificar ${c.unverifiable} · omitidos ${c.skipped} · solo Shopify ${c.shopify_only} ===`, 'ok');
+    if (summary.totalDiffs) log(`Pedidos importados con un total distinto al de WooCommerce: ${summary.totalDiffs}`, 'warn');
+    log(headline.text, headline.level);
+
+    const headlineEl = document.getElementById('ordHeadline');
+    headlineEl.textContent = headline.text;
+    headlineEl.className = `ord-headline ${headline.level}`;
+    document.getElementById('ordPanel').style.display = '';
+    renderOrdersComparison();
+    document.getElementById('ordPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setStatus('success', 'COMPARADO');
+  } catch (e) {
+    log(`✗ Error en la comparación de pedidos: ${e.message}`, 'err');
+    setStatus('error', 'ERROR');
+  } finally {
+    running = false;
+    document.getElementById('startBtn').disabled = false;
+  }
+}
+
+function setOrdFilter(status) {
+  ordFilter = ordFilter === status ? null : status;
+  renderOrdersComparison();
+}
+
+const ORD_STATUS_LABELS = { imported: 'Importado', missing: 'Falta', duplicate: 'Duplicado', unverifiable: 'Sin verificar', skipped: 'Omitido', shopify_only: 'Solo Shopify' };
+const WOO_ORDER_STATUS_LABELS = { completed: 'completado', processing: 'procesando', 'on-hold': 'en espera', pending: 'pendiente', cancelled: 'cancelado', refunded: 'reembolsado', failed: 'fallido' };
+
+function orderSideCell(lines, totalValue, totalHl) {
+  const td = document.createElement('td');
+  const total = document.createElement('div');
+  total.textContent = fmtPrice(Number(totalValue));
+  if (totalHl) total.className = 'cmp-hl';
+  td.appendChild(total);
+  lines.filter(Boolean).forEach(text => {
+    const line = document.createElement('div');
+    line.className = 'cmp-sku';
+    line.textContent = text;
+    td.appendChild(line);
+  });
+  return td;
+}
+
+function renderOrdersComparison() {
+  const { counts } = ordersSummary(ordRows);
+  Object.entries(counts).forEach(([status, n]) => {
+    const btn = document.querySelector(`#ordFilters [data-status="${status}"]`);
+    btn.querySelector('.stat-val').textContent = n;
+    btn.classList.toggle('active', status === ordFilter);
+  });
+
+  const q = document.getElementById('ordSearch').value.trim().toLowerCase().replace(/^#/, '');
+  const visible = ordRows.filter(r => (!ordFilter || r.status === ordFilter)
+    && (!q || r.number.toLowerCase().includes(q) || (r.shopify?.name || '').toLowerCase().includes(q)));
+
+  const body = document.getElementById('ordBody');
+  body.replaceChildren();
+  visible.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.appendChild(cell(`#${r.number}`, 'cmp-name'));
+    tr.appendChild(r.woo
+      ? orderSideCell([fmtOrderDate(r.woo.date), WOO_ORDER_STATUS_LABELS[r.woo.status] || r.woo.status], r.woo.total, r.totalDiff)
+      : cell('No está en el periodo', 'cmp-missing'));
+    tr.appendChild(r.shopify
+      ? orderSideCell([r.shopify.name, fmtOrderDate(r.shopify.date)], r.shopify.total, r.totalDiff)
+      : cell('No existe', 'cmp-missing'));
+    const badge = document.createElement('span');
+    badge.className = `cmp-badge ${r.status}`;
+    badge.textContent = ORD_STATUS_LABELS[r.status];
+    const stTd = document.createElement('td'); stTd.appendChild(badge); tr.appendChild(stTd);
+    body.appendChild(tr);
+  });
+  document.getElementById('ordEmpty').style.display = visible.length ? 'none' : '';
+}
+
 const fmtPrice = (n) => n === null ? '—' : n.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
 const fmtStock = (n) => n === null ? '—' : String(n);
 // Diagnóstico de visibilidad en WooCommerce: estado × catálogo × TPV, para decidir cómo
@@ -2659,7 +3430,7 @@ async function testShopify() {
 
 // ─── Migración principal ──────────────────────────────────────────────────────
 const PRODUCT_PAUSE_MS = 300;
-const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)', channels: 'solo canales de venta', coupons: 'solo vales (cupones)', orders: 'solo pedidos' };
+const MIGRATION_LABELS = { full: 'migración completa', stock: 'actualización stock/precios', new: 'solo productos nuevos', categories: 'solo categorías (árbol)', channels: 'solo canales de venta', coupons: 'solo vales (cupones)', orders: 'solo pedidos', giftcards: 'solo vales vendidos (tarjetas regalo)' };
 
 // ─── Punto de reanudación ────────────────────────────────────────────────────
 // RESUME-PURE-BEGIN
@@ -2718,6 +3489,7 @@ async function startMigration(mode = 'full', resumeFrom = null) {
   const channelsOnly = mode === 'channels';
   const couponsOnly = mode === 'coupons';
   const ordersOnly = mode === 'orders';
+  const giftCardsOnly = mode === 'giftcards';
   shopifyLocationId = null;
   if (running) { log('Ya hay una sincronización en curso.', 'warn'); return; }
   const cfg = getConfig();
@@ -2745,7 +3517,14 @@ async function startMigration(mode = 'full', resumeFrom = null) {
     // Modo solo pedidos: syncOrders indexa los productos de Shopify por su cuenta, no
     // necesita el catálogo de Woo.
     if (ordersOnly) {
-      await syncOrders(cfg, signal);
+      const finished = await syncOrders(cfg, signal);
+      setStatus(finished ? 'success' : 'error', finished ? 'COMPLETADO' : 'ERROR');
+      return;
+    }
+
+    // Modo solo vales vendidos: los lee de WooCommerce por producto, sin tocar el catálogo.
+    if (giftCardsOnly) {
+      await syncGiftCards(cfg, signal);
       setStatus('success', 'COMPLETADO');
       return;
     }
@@ -2987,6 +3766,11 @@ async function startMigration(mode = 'full', resumeFrom = null) {
     // Vales (cupones de Woo → códigos de descuento de Shopify)
     if (cfg.syncCoupons && mode === 'full' && !abortController.signal.aborted) {
       await syncCoupons(cfg, signal);
+    }
+
+    // Vales vendidos (crédito de tienda de Woo → tarjetas regalo de Shopify)
+    if (cfg.syncGiftCards && mode === 'full' && !abortController.signal.aborted) {
+      await syncGiftCards(cfg, signal);
     }
 
     // Eliminar en Shopify lo que no exista en WooCommerce (opcional, solo migración completa)
