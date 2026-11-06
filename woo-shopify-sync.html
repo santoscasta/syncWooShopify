@@ -2559,7 +2559,7 @@ const orderCents = (v) => Math.round(Number(v) * 100);
 function shopifyOrderSide(copies) {
   return {
     name: copies.map(o => o.name).join(', '),
-    date: copies[0].created_at,
+    date: copies[0].processed_at || copies[0].created_at,
     total: copies[0].total_price,
     count: copies.length,
   };
@@ -2594,6 +2594,8 @@ function planOrderImport(wooOrders, shopifyOrders, { readableFrom = null } = {})
     alreadyImported: byStatus('imported').length + byStatus('duplicate').length,
     skipped: byStatus('skipped').length,
     unverifiable: byStatus('unverifiable'),
+    // Los que ya tienen una sola copia se revisan por si les falta algo; los duplicados no se tocan.
+    toCheck: byStatus('imported').map(wo => ({ wo, so: copiesByNumber.get(String(wo.number).toLowerCase())[0] })),
   };
 }
 
@@ -2621,8 +2623,75 @@ function orderCustomer(wo, lookup) {
   return null;
 }
 
+const sameText = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+
+// Dirección de envío de Woo tal como la pide orderUpdate. País y provincia van por código, que es
+// lo que Woo guarda y lo único comparable: Shopify devuelve el nombre traducido ("Spain").
+function wooShippingAddressInput(shipping) {
+  if (!shipping?.address_1) return null;
+  const input = {
+    firstName: shipping.first_name || '', lastName: shipping.last_name || '',
+    address1: shipping.address_1, address2: shipping.address_2 || '',
+    city: shipping.city || '', zip: shipping.postcode || '',
+    countryCode: String(shipping.country || '').toUpperCase(),
+  };
+  if (shipping.state) input.provinceCode = String(shipping.state).toUpperCase();
+  return input;
+}
+
+function shippingMatches(input, sa) {
+  if (!sa) return false;
+  return sameText(input.firstName, sa.first_name) && sameText(input.lastName, sa.last_name)
+    && sameText(input.address1, sa.address1) && sameText(input.address2, sa.address2)
+    && sameText(input.city, sa.city) && sameText(input.zip, sa.zip)
+    && sameText(input.countryCode, sa.country_code)
+    && (!input.provinceCode || sameText(input.provinceCode, sa.province_code) || sameText(input.provinceCode, sa.province));
+}
+
+// Qué le falta a un pedido ya migrado comparado con Woo, que manda. Solo se corrige lo que Shopify
+// deja cambiar en un pedido creado: email, dirección de envío, cliente y pago. El total, los
+// productos o una cancelación no se pueden tocar por la API y van a `manual` para revisarlos.
+// contactVisible = false cuando Shopify oculta los datos de cliente: no aparecer no prueba que falten.
+function orderFixes(wo, so, { contactVisible = true } = {}) {
+  const update = {};
+  const manual = [];
+  let setCustomer = false;
+  if (contactVisible) {
+    const email = String(wo.billing?.email || '').trim();
+    if (email && !sameText(email, so.email)) update.email = email;
+    const shipping = wooShippingAddressInput(wo.shipping);
+    if (shipping && !shippingMatches(shipping, so.shipping_address)) update.shippingAddress = shipping;
+    setCustomer = Boolean(wooOrderCustomerEmail(wo)) && !so.customer;
+  }
+  const markAsPaid = Boolean(wo.date_paid) && so.financial_status === 'pending' && orderCents(wo.total) > 0;
+  if (orderCents(wo.total) !== orderCents(so.total_price)) manual.push(`total distinto: Woo ${wo.total} · Shopify ${so.total_price}`);
+  if (WOO_ORDER_SKIP_STATUSES.includes(wo.status) && !so.cancelled_at) manual.push(`«${wo.status}» en Woo y sin cancelar en Shopify`);
+  return { update, setCustomer, markAsPaid, manual };
+}
+
+const orderNeedsFix = (f) => Object.keys(f.update).length > 0 || f.setCustomer || f.markAsPaid;
+
 // Cobro que acompaña al pedido al crearlo. Los de 0 € (las ventas de vales) van sin cobro:
 // un cobro de 0 € no aporta nada y Shopify puede rechazarlo; sin cobro, el pedido toma el estado de pago indicado.
+// Estado de pago y cobro del pedido nuevo. Los de 0 € no llevan ninguno de los dos: con «paid» y
+// sin cobro, Shopify crea él mismo una venta por el total, y una de 0 € la rechaza con 422
+// («Amount must be greater than zero for sale transactions»).
+// Fecha original del pedido para processed_at, el único campo de fecha que Shopify acepta al crear
+// (created_at lo ignora y pone la de la importación). Se usa la hora GMT de Woo marcada como UTC;
+// sin zona, Shopify la tomaría como hora de la tienda.
+function wooOrderProcessedAt(wo) {
+  if (wo.date_created_gmt) return /(Z|[+-]\d\d:?\d\d)$/.test(wo.date_created_gmt) ? wo.date_created_gmt : `${wo.date_created_gmt}Z`;
+  return wo.date_created;
+}
+
+function orderPaymentFields(wo) {
+  if (!(orderCents(wo.total) > 0)) return {};
+  const financialStatus = wo.date_paid ? 'paid' : 'pending';
+  return { financial_status: financialStatus, transactions: orderTransactions(wo, financialStatus) };
+}
+
+const isZeroSaleError = (message) => /greater than zero for sale transactions/i.test(String(message));
+
 function orderTransactions(wo, financialStatus) {
   if (!(orderCents(wo.total) > 0)) return [];
   return [{
@@ -2740,6 +2809,93 @@ async function lookupOrderCustomer(cfg, email, ctx, signal) {
   return result;
 }
 
+const ORDER_UPDATE = `mutation($input: OrderInput!) { orderUpdate(input: $input) { order { id } userErrors { field message } } }`;
+const ORDER_MARK_AS_PAID = `mutation($input: OrderMarkAsPaidInput!) { orderMarkAsPaid(input: $input) { order { id } userErrors { field message } } }`;
+const ORDER_CUSTOMER_SET = `mutation($orderId: ID!, $customerId: ID!) { orderCustomerSet(orderId: $orderId, customerId: $customerId) { order { id } userErrors { field message } } }`;
+const MANUAL_REVIEW_LOG_LIMIT = 20;
+
+// Id del cliente de Shopify para el pedido: el que ya existe con ese email o uno nuevo. null si no
+// se puede saber (sin permiso o varios con el mismo email): mejor sin cliente que con uno duplicado.
+async function resolveOrderCustomerId(cfg, wo, ctx, signal) {
+  const email = wooOrderCustomerEmail(wo);
+  if (!email) return null;
+  const lookup = await lookupOrderCustomer(cfg, email, ctx, signal);
+  if (lookup.status === 'found') return lookup.id;
+  if (lookup.status !== 'none') return null;
+  const { customer } = await shopifyRequest(cfg, 'POST', 'customers.json',
+    { customer: { first_name: wo.billing?.first_name || '', last_name: wo.billing?.last_name || '', email } }, signal);
+  ctx.cache.set(email, { status: 'found', id: customer.id });
+  return customer.id;
+}
+
+async function applyOrderFixes(cfg, wo, so, fixes, ctx, signal) {
+  const orderId = `gid://shopify/Order/${so.id}`;
+  const done = [];
+  if (Object.keys(fixes.update).length) {
+    const data = await shopifyGraphQL(cfg, ORDER_UPDATE, { input: { id: orderId, ...fixes.update } }, signal);
+    throwUserErrors('orderUpdate', data.orderUpdate?.userErrors);
+    if (fixes.update.email) done.push('email');
+    if (fixes.update.shippingAddress) done.push('dirección de envío');
+  }
+  if (fixes.setCustomer && !ctx.customerSetUnavailable) {
+    const customerId = await resolveOrderCustomerId(cfg, wo, ctx, signal);
+    if (customerId) {
+      try {
+        const data = await shopifyGraphQL(cfg, ORDER_CUSTOMER_SET, { orderId, customerId: `gid://shopify/Customer/${String(customerId).split('/').pop()}` }, signal);
+        throwUserErrors('orderCustomerSet', data.orderCustomerSet?.userErrors);
+        done.push('cliente');
+      } catch (e) {
+        // Las versiones antiguas de la API no tienen orderCustomerSet: se avisa una vez y se sigue.
+        if (!/doesn't exist/i.test(e.message)) throw e;
+        ctx.customerSetUnavailable = true;
+        log(`No se puede asociar cliente a pedidos ya creados con la versión ${cfg.shopifyVersion} de la API (${e.message})`, 'warn');
+      }
+    }
+  }
+  if (fixes.markAsPaid) {
+    const data = await shopifyGraphQL(cfg, ORDER_MARK_AS_PAID, { input: { id: orderId } }, signal);
+    throwUserErrors('orderMarkAsPaid', data.orderMarkAsPaid?.userErrors);
+    done.push('pagado');
+  }
+  return done;
+}
+
+// Revisa los pedidos que ya están en Shopify y corrige lo que no coincide con Woo. Es idempotente:
+// un pedido ya correcto no genera ninguna llamada, así que puede ir en cada sincronización.
+async function fixMigratedOrders(cfg, toCheck, ctx, signal) {
+  if (!toCheck.length) return;
+  // Sin acceso a los datos de cliente Shopify devuelve el email, el cliente y la dirección vacíos en
+  // todos los pedidos: en ese caso no se sabe si faltan y no se escriben.
+  const contactVisible = toCheck.some(({ so }) => so.email || so.customer || so.shipping_address);
+  if (!contactVisible) log('Shopify no muestra los datos de cliente de los pedidos: no se revisan email, dirección ni cliente', 'warn');
+
+  let fixed = 0, errors = 0;
+  const manual = [];
+  for (const { wo, so } of toCheck) {
+    if (signal?.aborted) break;
+    const fixes = orderFixes(wo, so, { contactVisible });
+    fixes.manual.forEach(m => manual.push(`#${wo.number} (${so.name}): ${m}`));
+    if (!orderNeedsFix(fixes)) continue;
+    try {
+      const done = await applyOrderFixes(cfg, wo, so, fixes, ctx, signal);
+      if (done.length) {
+        log(`↻ Pedido #${wo.number} (${so.name}) actualizado: ${done.join(', ')}`, 'ok');
+        fixed++;
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      log(`✗ Error actualizando pedido #${wo.number} (${so.name}): ${e.message}`, 'err');
+      errors++;
+    }
+  }
+  log(`Pedidos ya migrados: ${toCheck.length} revisados · ${fixed} actualizados · ${errors} errores · ${manual.length} para revisar a mano`, errors ? 'warn' : 'ok');
+  if (manual.length) {
+    log('Shopify no deja cambiar esto por la API; revísalo a mano:', 'warn');
+    manual.slice(0, MANUAL_REVIEW_LOG_LIMIT).forEach(m => log(`  ${m}`, 'warn'));
+    if (manual.length > MANUAL_REVIEW_LOG_LIMIT) log(`  … y ${manual.length - MANUAL_REVIEW_LOG_LIMIT} más`, 'warn');
+  }
+}
+
 async function syncOrders(cfg, signal) {
   log('=== Sincronizando pedidos ===', 'info');
 
@@ -2753,7 +2909,7 @@ async function syncOrders(cfg, signal) {
   let plan;
   try {
     const readableFrom = shopifyReadableFrom(await getShopifyScopes(cfg, signal));
-    plan = planOrderImport(allWooOrders, await getShopifyOrders(cfg, signal), { readableFrom });
+    plan = planOrderImport(allWooOrders, await getShopifyOrders(cfg, signal, { detailed: true }), { readableFrom });
   } catch (e) {
     if (e.name === 'AbortError') throw e;
     log(`✗ No se pudieron leer los pedidos de Shopify (${e.message}); no se importa ninguno para no duplicarlos`, 'err');
@@ -2764,6 +2920,9 @@ async function syncOrders(cfg, signal) {
   if (plan.unverifiable.length) {
     log(`Pedidos con más de ${SHOPIFY_ORDERS_VISIBLE_DAYS} días que no se crean: ${plan.unverifiable.length}. Sin el permiso read_all_orders, Shopify no deja comprobar si ya están y se podrían duplicar`, 'warn');
   }
+  const customerCtx = { cache: new Map(), unavailable: false };
+  await fixMigratedOrders(cfg, plan.toCheck, customerCtx, signal);
+
   if (!wooOrders.length) {
     log('=== Pedidos: nada que crear ===', 'ok');
     return true;
@@ -2789,7 +2948,6 @@ async function syncOrders(cfg, signal) {
 
   // 4. Crear en Shopify los que faltan
   let okCount = 0, errCount = 0;
-  const customerCtx = { cache: new Map(), unavailable: false };
   const statusMap = {
     'processing': 'unfulfilled', 'completed': 'fulfilled', 'on-hold': 'unfulfilled',
     'pending': 'unfulfilled', 'cancelled': null, 'refunded': null, 'failed': null,
@@ -2811,19 +2969,16 @@ async function syncOrders(cfg, signal) {
       });
 
       const fulfillmentStatus = statusMap[wo.status] || 'unfulfilled';
-      const financialStatus = wo.date_paid ? 'paid' : 'pending';
-
       const order = {
         order: {
           line_items: lineItems,
-          financial_status: financialStatus,
+          ...orderPaymentFields(wo),
           fulfillment_status: fulfillmentStatus === 'fulfilled' ? 'fulfilled' : null,
-          created_at: wo.date_created,
+          processed_at: wooOrderProcessedAt(wo),
           note: `Importado de WooCommerce — Pedido #${wo.number}`,
           tags: `woo-import,woo-${wo.number}`,
           currency: wo.currency || 'EUR',
           total_tax: wo.total_tax || '0',
-          transactions: orderTransactions(wo, financialStatus),
         }
       };
 
@@ -2861,11 +3016,24 @@ async function syncOrders(cfg, signal) {
       const customer = customerEmail ? orderCustomer(wo, await lookupOrderCustomer(cfg, customerEmail, customerCtx, signal)) : null;
       if (customer) order.order.customer = customer;
 
-      const created = await shopifyRequest(cfg, 'POST', 'orders.json', order, signal);
+      let created;
+      try {
+        created = await shopifyRequest(cfg, 'POST', 'orders.json', order, signal);
+      } catch (e) {
+        // Si Shopify da por pagado un pedido de 0 € sin que se lo digamos, vuelve a crear la venta de
+        // 0 €. Como pendiente no la crea: el pedido entra igual, sin importe que cobrar.
+        if (!isZeroSaleError(e.message) || order.order.financial_status) throw e;
+        created = await shopifyRequest(cfg, 'POST', 'orders.json', { order: { ...order.order, financial_status: 'pending' } }, signal);
+        log(`Pedido #${wo.number} de 0 €: Shopify no lo admite como pagado; creado como pendiente`, 'warn');
+      }
       const createdCustomerId = created?.order?.customer?.id;
       if (customerEmail && createdCustomerId) customerCtx.cache.set(customerEmail, { status: 'found', id: createdCustomerId });
       const customerNote = customer ? (customer.id ? ' · cliente enlazado' : ' · cliente nuevo') : '';
-      log(`+ Pedido #${wo.number} creado (${wo.billing?.first_name} ${wo.billing?.last_name})${customerNote}`, 'ok');
+      const buyerName = [wo.billing?.first_name, wo.billing?.last_name].filter(Boolean).join(' ').trim();
+      const buyerNote = buyerName ? ` (${buyerName})` : '';
+      const savedDate = created?.order?.processed_at;
+      const dateNote = savedDate ? ` · fecha ${String(savedDate).slice(0, 16).replace('T', ' ')}` : '';
+      log(`+ Pedido #${wo.number} creado${buyerNote}${dateNote}${customerNote}`, 'ok');
       okCount++;
       await new Promise(r => setTimeout(r, 500));
 
@@ -3455,10 +3623,12 @@ async function getShopifyScopes(cfg, signal) {
   }
 }
 
-function getShopifyOrders(cfg, signal) {
+// detailed: también los datos que se comparan para corregir los pedidos ya migrados (orderFixes).
+function getShopifyOrders(cfg, signal, { detailed = false } = {}) {
   const createdMin = shopifyOrdersCreatedMin(cfg.ordersSince);
   const dateFilter = createdMin ? `&created_at_min=${encodeURIComponent(createdMin)}` : '';
-  return getAllShopifyPages(cfg, signal, `orders.json?status=any&limit=250&fields=id,name,tags,created_at,total_price${dateFilter}`, 'orders');
+  const fields = 'id,name,tags,created_at,processed_at,total_price' + (detailed ? ',email,customer,shipping_address,financial_status,cancelled_at' : '');
+  return getAllShopifyPages(cfg, signal, `orders.json?status=any&limit=250&fields=${fields}${dateFilter}`, 'orders');
 }
 
 // Solo lectura: no crea ni modifica pedidos en ninguna de las dos tiendas.

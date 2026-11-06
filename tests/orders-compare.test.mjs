@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 const html = readFileSync(new URL('../woo-shopify-sync.html', import.meta.url), 'utf8');
 const m = html.match(/\/\/ ORDERS-PURE-BEGIN([\s\S]*?)\/\/ ORDERS-PURE-END/);
 assert.ok(m, 'No se encontró el bloque ORDERS-PURE en el HTML');
-const { wooNumberFromTags, compareOrders, planOrderImport, orderTransactions, orderCustomer, wooOrderCustomerEmail, ordersSummary, ordersHeadline, shopifyOrdersCreatedMin, shopifyReadableFrom, WOO_ORDER_SKIP_STATUSES } =
-  new Function(`${m[1]}; return { wooNumberFromTags, compareOrders, planOrderImport, orderTransactions, orderCustomer, wooOrderCustomerEmail, ordersSummary, ordersHeadline, shopifyOrdersCreatedMin, shopifyReadableFrom, WOO_ORDER_SKIP_STATUSES };`)();
+const { wooNumberFromTags, compareOrders, planOrderImport, orderTransactions, orderCustomer, wooOrderCustomerEmail, orderFixes, orderNeedsFix, orderPaymentFields, isZeroSaleError, wooOrderProcessedAt, ordersSummary, ordersHeadline, shopifyOrdersCreatedMin, shopifyReadableFrom, WOO_ORDER_SKIP_STATUSES } =
+  new Function(`${m[1]}; return { wooNumberFromTags, compareOrders, planOrderImport, orderTransactions, orderCustomer, wooOrderCustomerEmail, orderFixes, orderNeedsFix, orderPaymentFields, isZeroSaleError, wooOrderProcessedAt, ordersSummary, ordersHeadline, shopifyOrdersCreatedMin, shopifyReadableFrom, WOO_ORDER_SKIP_STATUSES };`)();
 
 const wooOrder = (number, date, extra = {}) => ({ number: String(number), date_created: date, status: 'completed', total: '10.00', ...extra });
 const shopifyOrder = (number, date, extra = {}) => ({ name: `#S${number}`, tags: `woo-import, woo-${number}`, created_at: date, total_price: '10.00', ...extra });
@@ -173,7 +173,7 @@ assert.deepEqual(plan.unverifiable.map(o => o.number), ['35'], 'si no se puede c
 
 const planAllOrders = planOrderImport([wooOrder(35, '2026-08-01T10:00:00')], [], {});
 assert.deepEqual(planAllOrders.toCreate.map(o => o.number), ['35'], 'con read_all_orders la ausencia es real');
-assert.deepEqual(planOrderImport([], [], {}), { toCreate: [], alreadyImported: 0, skipped: 0, unverifiable: [] });
+assert.deepEqual(planOrderImport([], [], {}), { toCreate: [], alreadyImported: 0, skipped: 0, unverifiable: [], toCheck: [] });
 
 // El plan y la comparación tienen que dar la misma respuesta sobre los mismos datos
 const sameWoo = [wooOrder(40, '2026-10-01T10:00:00'), wooOrder(41, '2026-10-02T10:00:00')];
@@ -217,3 +217,89 @@ assert.equal(orderCustomer({ customer_id: 0, billing: { email: 'x@y.es' } }, { s
 assert.equal(orderCustomer(registered, { status: 'found', id: 'gid://shopify/Customer/abc' }), null, 'un id raro no se manda');
 
 console.log('orders-compare: cliente de pedidos OK');
+
+// ── Pedidos ya migrados: qué hay que corregir ──
+{
+  const plan = planOrderImport(
+    [wooOrder(1, '2026-10-01T10:00:00'), wooOrder(2, '2026-10-02T10:00:00'), wooOrder(5, '2026-10-05T10:00:00')],
+    [shopifyOrder(1, '2026-10-01T12:00:00+02:00', { id: 101 }), shopifyOrder(5, '2026-10-05T12:00:00+02:00'), shopifyOrder(5, '2026-10-05T13:00:00+02:00')],
+  );
+  assert.deepEqual(plan.toCheck.map(c => [c.wo.number, c.so.id]), [['1', 101]], 'solo se revisan los que tienen una copia; los duplicados no se tocan');
+  assert.deepEqual(plan.toCreate.map(o => o.number), ['2']);
+}
+
+const wooFull = {
+  number: '7', status: 'completed', total: '30.00', customer_id: 42, date_paid: '2026-10-01T10:00:00',
+  billing: { first_name: 'Ana', last_name: 'Ruiz', email: 'Ana@Ejemplo.es' },
+  shipping: { first_name: 'Ana', last_name: 'Ruiz', address_1: 'Calle Mayor 1', address_2: '', city: 'Madrid', postcode: '28001', country: 'ES', state: 'M' },
+};
+const shopifyOk = {
+  id: 700, total_price: '30.00', financial_status: 'paid', cancelled_at: null, email: 'ana@ejemplo.es', customer: { id: 9 },
+  shipping_address: { first_name: 'Ana', last_name: 'Ruiz', address1: 'Calle Mayor 1', address2: null, city: 'Madrid', zip: '28001', country: 'Spain', country_code: 'ES', province: 'Madrid', province_code: 'M' },
+};
+{
+  const f = orderFixes(wooFull, shopifyOk);
+  assert.deepEqual(f, { update: {}, setCustomer: false, markAsPaid: false, manual: [] }, 'un pedido correcto no se toca (el país y la provincia se comparan por código)');
+  assert.equal(orderNeedsFix(f), false);
+}
+{
+  const f = orderFixes(wooFull, { ...shopifyOk, email: null, customer: null, financial_status: 'pending',
+    shipping_address: { ...shopifyOk.shipping_address, address1: 'Calle Menor 2' } });
+  assert.equal(f.update.email, 'Ana@Ejemplo.es');
+  assert.deepEqual(f.update.shippingAddress, { firstName: 'Ana', lastName: 'Ruiz', address1: 'Calle Mayor 1', address2: '', city: 'Madrid', zip: '28001', countryCode: 'ES', provinceCode: 'M' });
+  assert.equal(f.setCustomer, true, 'cliente registrado en Woo y pedido sin cliente en Shopify');
+  assert.equal(f.markAsPaid, true, 'pagado en Woo y pendiente en Shopify');
+  assert.equal(orderNeedsFix(f), true);
+}
+{
+  const f = orderFixes({ ...wooFull, customer_id: 0 }, { ...shopifyOk, customer: null });
+  assert.equal(f.setCustomer, false, 'los invitados no llevan cliente');
+  const g = orderFixes(wooFull, { ...shopifyOk, customer: { id: 55 } });
+  assert.equal(g.setCustomer, false, 'si ya tiene un cliente no se cambia');
+  const h = orderFixes({ ...wooFull, date_paid: null }, { ...shopifyOk, financial_status: 'pending' });
+  assert.equal(h.markAsPaid, false, 'sin pago en Woo no se marca como pagado');
+  const i = orderFixes({ ...wooFull, shipping: { address_1: '' } }, { ...shopifyOk, shipping_address: null });
+  assert.equal(i.update.shippingAddress, undefined, 'sin dirección de envío en Woo no se escribe ninguna');
+  const j = orderFixes({ ...wooFull, shipping: { ...wooFull.shipping, state: '' } }, { ...shopifyOk, shipping_address: { ...shopifyOk.shipping_address, address1: 'X' } });
+  assert.equal('provinceCode' in j.update.shippingAddress, false, 'sin provincia no se manda una vacía');
+}
+{
+  const f = orderFixes({ ...wooFull, total: '35.00', status: 'refunded' }, shopifyOk);
+  assert.equal(f.manual.length, 2, 'lo que Shopify no deja cambiar se avisa para revisarlo a mano');
+  assert.match(f.manual[0], /total/);
+  assert.match(f.manual[1], /refunded/);
+  assert.equal(orderNeedsFix(f), false, 'los avisos no son cambios automáticos');
+  assert.equal(orderFixes({ ...wooFull, status: 'cancelled' }, { ...shopifyOk, cancelled_at: '2026-10-02' }).manual.length, 0);
+}
+{
+  const f = orderFixes(wooFull, { ...shopifyOk, email: null, customer: null, shipping_address: null }, { contactVisible: false });
+  assert.deepEqual([f.update, f.setCustomer], [{}, false], 'si Shopify oculta los datos de cliente no se puede saber si faltan: no se tocan');
+}
+
+console.log('orders-compare: corrección de pedidos migrados OK');
+
+// ── Pedidos de 0 €: ni estado de pago ni cobro (Shopify crea uno de 0 € con «paid» y lo rechaza) ──
+assert.deepEqual(orderPaymentFields({ total: '0.00', date_paid: '2026-10-01' }), {},
+  'error real del pedido #23665: «Amount must be greater than zero for sale transactions»');
+assert.deepEqual(orderPaymentFields({ total: '12.00', date_paid: '2026-10-01', payment_method_title: 'Tarjeta' }),
+  { financial_status: 'paid', transactions: [{ kind: 'sale', status: 'success', amount: '12.00', gateway: 'Tarjeta' }] });
+assert.deepEqual(orderPaymentFields({ total: '12.00', date_paid: null }).financial_status, 'pending');
+assert.equal(isZeroSaleError('Shopify 422: {"errors":{"order":["Transactions is invalid"],"transactions":["Amount must be greater than zero for sale transactions"]}}'), true);
+assert.equal(isZeroSaleError('Shopify 422: {"errors":{"line_items":["is invalid"]}}'), false);
+assert.equal(orderFixes({ ...wooFull, total: '0.00' }, { ...shopifyOk, total_price: '0.00', financial_status: 'pending' }).markAsPaid, false,
+  'un pedido de 0 € no se marca como pagado: no hay importe que cobrar y Shopify lo rechazaría');
+
+console.log('orders-compare: pedidos de 0 € OK');
+
+// ── Fecha original del pedido (processed_at; Shopify ignora created_at) ──
+assert.equal(wooOrderProcessedAt({ date_created: '2026-03-01T10:00:00', date_created_gmt: '2026-03-01T09:00:00' }), '2026-03-01T09:00:00Z',
+  'la hora GMT de Woo, marcada como UTC para que Shopify no la lea como hora local');
+assert.equal(wooOrderProcessedAt({ date_created: '2026-03-01T10:00:00', date_created_gmt: '2026-03-01T09:00:00Z' }), '2026-03-01T09:00:00Z');
+assert.equal(wooOrderProcessedAt({ date_created: '2026-03-01T10:00:00' }), '2026-03-01T10:00:00', 'sin GMT, la local tal cual');
+assert.equal(wooOrderProcessedAt({}), undefined);
+{
+  const rows = compareOrders([wooOrder(8, '2026-03-01T10:00:00')], [shopifyOrder(8, '2026-11-05T22:00:00+01:00', { processed_at: '2026-03-01T10:00:00+01:00' })]);
+  assert.equal(rows[0].shopify.date, '2026-03-01T10:00:00+01:00', 'la comparación enseña la fecha del pedido, no la de la importación');
+}
+
+console.log('orders-compare: fecha original OK');
